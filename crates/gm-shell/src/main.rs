@@ -6,6 +6,7 @@
 
 mod app;
 mod browser;
+mod covers;
 mod nav;
 mod theme;
 mod views;

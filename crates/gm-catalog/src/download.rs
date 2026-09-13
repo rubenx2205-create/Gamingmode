@@ -213,8 +213,11 @@ pub fn part_path(dest: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Cliente HTTP compartido: la conexion TLS via schannel (la pila del propio
+/// Windows) es la unica que necesita el binario, tanto para descargar ROMs
+/// como para hablar con SteamGridDB.
 #[cfg(windows)]
-fn build_agent() -> Option<ureq::Agent> {
+pub(crate) fn build_agent() -> Option<ureq::Agent> {
     match native_tls::TlsConnector::new() {
         Ok(connector) => Some(
             ureq::AgentBuilder::new()

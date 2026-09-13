@@ -12,6 +12,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::covers::CoverTextures;
 use gm_catalog::download::Downloader;
 use gm_catalog::{Catalog, PlatformIndex};
 use gm_core::config::Config;
@@ -124,12 +125,26 @@ pub struct App {
     pub memory: MemoryStatus,
     /// Cambio de pantalla completa pendiente de enviarle a la ventana.
     pending_fullscreen: Option<bool>,
+    /// Se puso true al cambiar de tema: hay que releer el estilo de egui.
+    pending_theme_apply: bool,
     first_frame: bool,
     last_memory_check: Instant,
     pub last_activity: Instant,
+    /// Con que se jugo por ultima vez: decide que boton ensenar en la ayuda
+    /// de pantalla. Cambia solo, como en cualquier consola.
+    pub input_source: crate::nav::InputSource,
     download_meta: HashMap<u64, (String, String)>,
     handled_downloads: HashSet<u64>,
     pub columns: usize,
+
+    // Caratulas (SteamGridDB)
+    pub covers: CoverTextures,
+    /// Juegos para los que ya se intento buscar caratula esta sesion, con
+    /// exito o sin el: evita volver a pedirla solo porque la tarjeta ha
+    /// vuelto a entrar en pantalla al desplazar la rejilla.
+    cover_attempted: HashSet<String>,
+    cover_tx: Sender<(String, PathBuf)>,
+    cover_rx: Receiver<(String, PathBuf)>,
 }
 
 impl App {
@@ -138,6 +153,7 @@ impl App {
             log::error!("config invalida, se usan los valores por defecto: {e}");
             Config::default()
         });
+        crate::theme::set_theme(config.general.theme);
         crate::theme::install(ctx, config.general.ui_scale);
 
         let library = Library::load().unwrap_or_else(|e| {
@@ -150,6 +166,7 @@ impl App {
         let optimizer = Optimizer::new(config.power.clone());
         let (power_tx, power_rx) = mpsc::channel();
         let (resource_tx, resource_rx) = mpsc::channel();
+        let (cover_tx, cover_rx) = mpsc::channel();
 
         let mut app = Self {
             config,
@@ -193,12 +210,18 @@ impl App {
             toasts: Vec::new(),
             memory: MemoryStatus::default(),
             pending_fullscreen: None,
+            pending_theme_apply: false,
             first_frame: true,
             last_memory_check: Instant::now() - Duration::from_secs(60),
             last_activity: Instant::now(),
+            input_source: crate::nav::InputSource::KeyboardMouse,
             download_meta: HashMap::new(),
             handled_downloads: HashSet::new(),
             columns: 5,
+            covers: CoverTextures::default(),
+            cover_attempted: HashSet::new(),
+            cover_tx,
+            cover_rx,
         };
 
         // Si la sesion anterior se fue sin restaurar, se deshace ahora.
@@ -264,6 +287,15 @@ impl App {
 
     pub fn toggle_fullscreen(&mut self) {
         self.set_fullscreen(!self.config.general.fullscreen);
+    }
+
+    /// Cambia entre el tema claro y el oscuro, y lo deja guardado. Se nota en
+    /// el acto, sin reiniciar el shell.
+    pub fn set_theme(&mut self, theme: gm_core::config::Theme) {
+        self.config.general.theme = theme;
+        crate::theme::set_theme(theme);
+        self.pending_theme_apply = true;
+        self.save_config();
     }
 
     /// Reafirma el estado de ventana guardado en la configuracion.
@@ -617,12 +649,57 @@ impl App {
         self.toast(ToastKind::Good, format!("Descargando {}", entry.name));
     }
 
+    /// Busca la caratula de un juego en SteamGridDB, en un hilo aparte.
+    ///
+    /// No hace nada sin clave configurada, y no abre ninguna ventana ni
+    /// dialogo: si funciona, la textura aparece sola en el sitio de la
+    /// generada la proxima vez que se dibuje la tarjeta, sin sacar al shell
+    /// de pantalla completa para nada.
+    pub fn maybe_fetch_cover(&mut self, game_id: &str, title: &str) {
+        if !self.config.covers.auto_fetch || self.cover_attempted.contains(game_id) {
+            return;
+        }
+        let Some(api_key) = self.config.covers.steamgrid_api_key.clone() else { return };
+        if api_key.trim().is_empty() {
+            return;
+        }
+        self.cover_attempted.insert(game_id.to_string());
+
+        let game_id = game_id.to_string();
+        let title = title.to_string();
+        let dest_dir = gm_core::paths::covers_dir();
+        let tx = self.cover_tx.clone();
+        std::thread::spawn(move || match gm_catalog::steamgrid::fetch_cover(&api_key, &title, &game_id, &dest_dir) {
+            Ok(path) => {
+                let _ = tx.send((game_id, path));
+            }
+            Err(e) => log::debug!("sin caratula para '{title}': {e}"),
+        });
+    }
+
     // ------------------------------------------------------------------
     // Trabajo de fondo
     // ------------------------------------------------------------------
 
     fn pump(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
+
+        // Caratulas de SteamGridDB que acaban de llegar.
+        let mut cover_arrived = false;
+        while let Ok((game_id, path)) = self.cover_rx.try_recv() {
+            if let Some(game) = self.library.get_mut(&game_id) {
+                game.cover = Some(path);
+                self.covers.invalidate(&game_id);
+                self.mark_library_dirty();
+                cover_arrived = true;
+            }
+        }
+        if cover_arrived {
+            // Se guarda de inmediato: una caratula descargada no deberia
+            // perderse si el shell se cierra antes del siguiente cambio en la
+            // biblioteca.
+            self.save_library();
+        }
 
         // Juego terminado?
         let finished = match self.session.as_mut() {
@@ -738,6 +815,16 @@ impl App {
         let now = Instant::now();
         let frame = self.input.poll(now);
         let mut actions = frame.actions;
+
+        // La ayuda de botones sigue a quien jugo por ultimo, no a quien esta
+        // conectado: con un mando y un teclado a la vez, se ensena el que se
+        // acaba de usar.
+        if frame.activity {
+            let kind = self.input.pad_kind().unwrap_or(gm_input::PadKind::Xbox);
+            self.input_source = crate::nav::InputSource::from_pad_kind(kind);
+        } else if crate::nav::keyboard_or_mouse_activity(ctx) {
+            self.input_source = crate::nav::InputSource::KeyboardMouse;
+        }
 
         // Mientras se escribe en el buscador el teclado es texto, no
         // navegacion; el mando sigue funcionando con normalidad.
@@ -1015,7 +1102,7 @@ impl App {
 
 impl eframe::App for App {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        let bg = crate::theme::PALETTE.bg;
+        let bg = crate::theme::pal().bg;
         [bg.r() as f32 / 255.0, bg.g() as f32 / 255.0, bg.b() as f32 / 255.0, 1.0]
     }
 
@@ -1028,6 +1115,10 @@ impl eframe::App for App {
             self.request_window_mode();
         }
         self.apply_window_mode(ctx);
+        if self.pending_theme_apply {
+            crate::theme::install(ctx, self.config.general.ui_scale);
+            self.pending_theme_apply = false;
+        }
 
         self.pump(ctx);
         self.refresh_library_view();

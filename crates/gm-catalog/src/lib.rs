@@ -4,6 +4,7 @@
 pub mod download;
 pub mod entry;
 pub mod names;
+pub mod steamgrid;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

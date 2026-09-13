@@ -12,10 +12,10 @@ mod settings;
 
 pub use settings::SETTINGS_ROWS;
 
-use egui::{Align, Align2, Color32, Frame, Margin, Rect, RichText, Rounding, Sense, Stroke, Vec2};
+use egui::{Align, Align2, Color32, Frame, Margin, Rect, RichText, Rounding, Sense, Stroke, TextureHandle, Vec2};
 
 use crate::app::{App, ToastKind, View};
-use crate::theme::{self, PALETTE};
+use crate::theme;
 
 impl App {
     pub fn draw(&mut self, ctx: &egui::Context) {
@@ -23,7 +23,7 @@ impl App {
         self.bottom_bar(ctx);
 
         egui::CentralPanel::default()
-            .frame(Frame::none().fill(PALETTE.bg).inner_margin(Margin::symmetric(28.0, 18.0)))
+            .frame(Frame::none().fill(theme::pal().bg).inner_margin(Margin::symmetric(28.0, 18.0)))
             .show(ctx, |ui| match self.view {
                 View::Library => self.library_view_ui(ui),
                 View::GameDetail => self.detail_ui(ui),
@@ -42,21 +42,21 @@ impl App {
     fn top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("barra_superior")
             .exact_height(66.0)
-            .frame(Frame::none().fill(PALETTE.surface).inner_margin(Margin::symmetric(28.0, 12.0)))
+            .frame(Frame::none().fill(theme::pal().surface).inner_margin(Margin::symmetric(28.0, 12.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.label(RichText::new("MODO JUEGO").size(22.0).strong().color(PALETTE.accent));
+                    ui.label(RichText::new("MODO JUEGO").size(22.0).strong().color(theme::pal().accent));
                     ui.add_space(18.0);
-                    ui.label(RichText::new(self.view_title()).size(20.0).color(PALETTE.text_dim));
+                    ui.label(RichText::new(self.view_title()).size(20.0).color(theme::pal().text_dim));
 
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         // Estado del optimizador.
                         let (label, color) = if self.power_busy() {
-                            ("trabajando...", PALETTE.warn)
+                            ("trabajando...", theme::pal().warn)
                         } else if self.power_engaged {
-                            ("optimizado", PALETTE.good)
+                            ("optimizado", theme::pal().good)
                         } else {
-                            ("normal", PALETTE.text_dim)
+                            ("normal", theme::pal().text_dim)
                         };
                         chip(ui, label, color);
 
@@ -65,18 +65,27 @@ impl App {
                             let total = gm_core::util::format_bytes(self.memory.total);
                             let load = self.memory.used() as f32 / self.memory.total as f32;
                             let color = if load > 0.9 {
-                                PALETTE.bad
+                                theme::pal().bad
                             } else if load > 0.75 {
-                                PALETTE.warn
+                                theme::pal().warn
                             } else {
-                                PALETTE.text_dim
+                                theme::pal().text_dim
                             };
                             chip(ui, &format!("RAM {used} / {total}"), color);
                         }
 
                         let pads = self.input.connected_pads();
-                        let color = if pads > 0 { PALETTE.good } else { PALETTE.text_dim };
-                        chip(ui, &format!("{pads} mando(s)"), color);
+                        let color = if pads > 0 { theme::pal().good } else { theme::pal().text_dim };
+                        let label = match self.input.pad_kind() {
+                            Some(kind) => {
+                                format!(
+                                    "{pads} mando(s) ({})",
+                                    crate::nav::InputSource::from_pad_kind(kind).short_name()
+                                )
+                            }
+                            None => format!("{pads} mando(s)"),
+                        };
+                        chip(ui, &label, color);
 
                         if let Some(session) = self.session.as_ref() {
                             chip(
@@ -86,7 +95,7 @@ impl App {
                                     session.title,
                                     gm_core::util::format_playtime(session.elapsed_secs().max(60))
                                 ),
-                                PALETTE.accent,
+                                theme::pal().accent,
                             );
                         }
                     });
@@ -95,45 +104,70 @@ impl App {
     }
 
     fn bottom_bar(&mut self, ctx: &egui::Context) {
-        let hints: &[(&str, &str)] = match self.view {
+        use gm_input::NavAction;
+
+        // Las acciones, no los nombres de boton: el glifo que se ensena sale
+        // de `self.input_source`, que cambia solo segun con que se juega.
+        let hints: &[(NavAction, &str)] = match self.view {
             View::Library => &[
-                ("A", "Ver"),
-                ("B", "Limpiar busqueda"),
-                ("X", "Anadir .exe"),
-                ("Y", "Favorito"),
-                ("LB", "Orden"),
-                ("RB", "Catalogo"),
-                ("Select", "Buscar"),
-                ("Start", "Menu"),
+                (NavAction::Accept, "Ver"),
+                (NavAction::Back, "Limpiar busqueda"),
+                (NavAction::Context, "Anadir .exe"),
+                (NavAction::Favorite, "Favorito"),
+                (NavAction::TabPrev, "Orden"),
+                (NavAction::TabNext, "Catalogo"),
+                (NavAction::Search, "Buscar"),
+                (NavAction::Menu, "Menu"),
             ],
-            View::GameDetail => &[("A", "Jugar"), ("B", "Volver"), ("X", "Quitar"), ("Y", "Favorito")],
-            View::Catalog => &[("A", "Abrir"), ("B", "Volver"), ("X", "Carpeta del catalogo"), ("RB", "Descargas")],
+            View::GameDetail => &[
+                (NavAction::Accept, "Jugar"),
+                (NavAction::Back, "Volver"),
+                (NavAction::Context, "Quitar"),
+                (NavAction::Favorite, "Favorito"),
+            ],
+            View::Catalog => &[
+                (NavAction::Accept, "Abrir"),
+                (NavAction::Back, "Volver"),
+                (NavAction::Context, "Carpeta del catalogo"),
+                (NavAction::TabNext, "Descargas"),
+            ],
             View::CatalogEntries => &[
-                ("A", "Descargar"),
-                ("B", "Volver"),
-                ("X", "Anadir ROM local"),
-                ("Select", "Buscar"),
-                ("RB", "Descargas"),
+                (NavAction::Accept, "Descargar"),
+                (NavAction::Back, "Volver"),
+                (NavAction::Context, "Anadir ROM local"),
+                (NavAction::Search, "Buscar"),
+                (NavAction::TabNext, "Descargas"),
             ],
-            View::Downloads => &[("B", "Volver"), ("X", "Cancelar"), ("Y", "Limpiar terminadas")],
+            View::Downloads => &[
+                (NavAction::Back, "Volver"),
+                (NavAction::Context, "Cancelar"),
+                (NavAction::Favorite, "Limpiar terminadas"),
+            ],
             View::Resources => &[
-                ("A", "Marcar/desmarcar servicio"),
-                ("B", "Volver"),
-                ("X", "Volver a medir"),
-                ("Y", "Seleccion recomendada"),
+                (NavAction::Accept, "Marcar/desmarcar servicio"),
+                (NavAction::Back, "Volver"),
+                (NavAction::Context, "Volver a medir"),
+                (NavAction::Favorite, "Seleccion recomendada"),
             ],
-            View::Settings => &[("A/Der", "Cambiar"), ("Izq", "Atras"), ("B", "Guardar y volver")],
-            View::Quick => &[("A", "Elegir"), ("B", "Cerrar")],
-            View::Browser => &[("A", "Abrir"), ("B", "Subir"), ("Y", "Usar esta carpeta")],
+            View::Settings => &[
+                (NavAction::Right, "Cambiar"),
+                (NavAction::Left, "Valor anterior"),
+                (NavAction::Back, "Guardar y volver"),
+            ],
+            View::Quick => &[(NavAction::Accept, "Elegir"), (NavAction::Back, "Cerrar")],
+            View::Browser => {
+                &[(NavAction::Accept, "Abrir"), (NavAction::Back, "Subir"), (NavAction::Favorite, "Usar esta carpeta")]
+            }
         };
 
+        let source = self.input_source;
         egui::TopBottomPanel::bottom("barra_inferior")
             .exact_height(52.0)
-            .frame(Frame::none().fill(PALETTE.surface).inner_margin(Margin::symmetric(28.0, 8.0)))
+            .frame(Frame::none().fill(theme::pal().surface).inner_margin(Margin::symmetric(28.0, 8.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    for (button, label) in hints {
-                        button_hint(ui, button, label);
+                    for (action, label) in hints {
+                        button_hint(ui, crate::nav::button_label(source, *action), label);
                         ui.add_space(14.0);
                     }
                 });
@@ -150,18 +184,18 @@ impl App {
             .show(ctx, |ui| {
                 for toast in &self.toasts {
                     let color = match toast.kind {
-                        ToastKind::Info => PALETTE.accent,
-                        ToastKind::Good => PALETTE.good,
-                        ToastKind::Bad => PALETTE.bad,
+                        ToastKind::Info => theme::pal().accent,
+                        ToastKind::Good => theme::pal().good,
+                        ToastKind::Bad => theme::pal().bad,
                     };
                     Frame::none()
-                        .fill(PALETTE.surface_alt)
+                        .fill(theme::pal().surface_alt)
                         .rounding(Rounding::same(8.0))
                         .stroke(Stroke::new(1.0, color))
                         .inner_margin(Margin::symmetric(16.0, 10.0))
                         .show(ui, |ui| {
                             ui.set_max_width(520.0);
-                            ui.label(RichText::new(&toast.text).color(PALETTE.text));
+                            ui.label(RichText::new(&toast.text).color(theme::pal().text));
                         });
                     ui.add_space(8.0);
                 }
@@ -191,7 +225,7 @@ impl App {
 
 pub fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
     Frame::none()
-        .fill(PALETTE.surface_alt)
+        .fill(theme::pal().surface_alt)
         .rounding(Rounding::same(14.0))
         .inner_margin(Margin::symmetric(12.0, 5.0))
         .show(ui, |ui| {
@@ -202,14 +236,14 @@ pub fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
 
 pub fn button_hint(ui: &mut egui::Ui, button: &str, label: &str) {
     Frame::none()
-        .fill(PALETTE.accent_dim)
+        .fill(theme::pal().accent_dim)
         .rounding(Rounding::same(10.0))
         .inner_margin(Margin::symmetric(9.0, 3.0))
         .show(ui, |ui| {
-            ui.label(RichText::new(button).size(14.0).strong().color(PALETTE.text));
+            ui.label(RichText::new(button).size(14.0).strong().color(theme::pal().text));
         });
     ui.add_space(6.0);
-    ui.label(RichText::new(label).size(15.0).color(PALETTE.text_dim));
+    ui.label(RichText::new(label).size(15.0).color(theme::pal().text_dim));
 }
 
 /// Recuadro de foco: el usuario tiene que saber donde esta sin pensarlo.
@@ -217,14 +251,56 @@ pub fn focus_ring(ui: &egui::Ui, rect: Rect) {
     ui.painter().rect_stroke(
         rect.expand(3.0),
         Rounding::same(theme::CARD_ROUNDING + 3.0),
-        Stroke::new(3.0, PALETTE.accent),
+        Stroke::new(3.0, theme::pal().accent),
     );
 }
 
+/// Caratula de un juego. Si hay una imagen real (SteamGridDB) se dibuja
+/// ella sola, tal cual viene, sin superponerle titulo ni iniciales: el arte ya
+/// trae el logo del juego. Sin imagen, se cae en un recuadro generado.
+pub fn cover_tile(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    title: &str,
+    subtitle: &str,
+    focused: bool,
+    texture: Option<&TextureHandle>,
+) {
+    match texture {
+        Some(texture) => real_cover_tile(ui, rect, texture, focused),
+        None => generated_cover_tile(ui, rect, title, subtitle, focused),
+    }
+}
+
+/// Recorta la imagen para llenar el hueco sin deformarla ("cover", como en
+/// CSS): el sobrante se pierde por los lados o por arriba/abajo, nunca se
+/// encoge la imagen entera dejando bandas vacias.
+fn real_cover_tile(ui: &mut egui::Ui, rect: Rect, texture: &TextureHandle, focused: bool) {
+    let size = texture.size_vec2();
+    let image_aspect = size.x / size.y;
+    let rect_aspect = rect.width() / rect.height();
+
+    let uv = if image_aspect > rect_aspect {
+        let visible_fraction = rect_aspect / image_aspect;
+        let margin = (1.0 - visible_fraction) / 2.0;
+        Rect::from_min_max(egui::pos2(margin, 0.0), egui::pos2(1.0 - margin, 1.0))
+    } else {
+        let visible_fraction = image_aspect / rect_aspect;
+        let margin = (1.0 - visible_fraction) / 2.0;
+        Rect::from_min_max(egui::pos2(0.0, margin), egui::pos2(1.0, 1.0 - margin))
+    };
+
+    ui.painter().image(texture.id(), rect, uv, Color32::WHITE);
+    if focused {
+        focus_ring(ui, rect);
+    }
+}
+
 /// Caratula generada: color estable derivado del titulo e iniciales grandes.
-pub fn cover_tile(ui: &mut egui::Ui, rect: Rect, title: &str, subtitle: &str, focused: bool) {
+/// Es lo que se ve mientras no hay arte real, o si no se encuentra ninguno.
+fn generated_cover_tile(ui: &mut egui::Ui, rect: Rect, title: &str, subtitle: &str, focused: bool) {
     let painter = ui.painter();
-    painter.rect_filled(rect, Rounding::same(theme::CARD_ROUNDING), theme::color_for(title));
+    painter.rect_filled(rect, Rounding::same(theme::CARD_ROUNDING), theme::shade_for(title));
 
     // Franja inferior para el texto, legible sobre cualquier tono.
     let strip = Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 76.0), rect.max);
@@ -246,7 +322,7 @@ pub fn cover_tile(ui: &mut egui::Ui, rect: Rect, title: &str, subtitle: &str, fo
         Align2::LEFT_TOP,
         ellipsize(title, 22),
         egui::FontId::proportional(17.0),
-        PALETTE.text,
+        theme::pal().text,
     );
     if !subtitle.is_empty() {
         painter.text(
@@ -254,7 +330,7 @@ pub fn cover_tile(ui: &mut egui::Ui, rect: Rect, title: &str, subtitle: &str, fo
             Align2::LEFT_TOP,
             ellipsize(subtitle, 26),
             egui::FontId::proportional(14.0),
-            PALETTE.text_dim,
+            theme::pal().text_dim,
         );
     }
     if focused {
@@ -266,10 +342,10 @@ pub fn cover_tile(ui: &mut egui::Ui, rect: Rect, title: &str, subtitle: &str, fo
 pub fn list_row(ui: &mut egui::Ui, focused: bool, height: f32, add: impl FnOnce(&mut egui::Ui)) -> egui::Response {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
-    let fill = if focused { PALETTE.accent_dim } else { PALETTE.surface };
+    let fill = if focused { theme::pal().accent_dim } else { theme::pal().surface };
     ui.painter().rect_filled(rect, Rounding::same(8.0), fill);
     if focused {
-        ui.painter().rect_stroke(rect, Rounding::same(8.0), Stroke::new(2.0, PALETTE.accent));
+        ui.painter().rect_stroke(rect, Rounding::same(8.0), Stroke::new(2.0, theme::pal().accent));
     }
     let mut child = ui.new_child(
         egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(16.0, 8.0))).layout(egui::Layout::top_down(Align::Min)),
@@ -304,9 +380,9 @@ pub fn focus_changed(ctx: &egui::Context, key: &str, focus: usize) -> bool {
 pub fn empty_state(ui: &mut egui::Ui, title: &str, hint: &str) {
     ui.add_space(80.0);
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new(title).size(26.0).color(PALETTE.text));
+        ui.label(RichText::new(title).size(26.0).color(theme::pal().text));
         ui.add_space(10.0);
-        ui.label(RichText::new(hint).size(18.0).color(PALETTE.text_dim));
+        ui.label(RichText::new(hint).size(18.0).color(theme::pal().text_dim));
     });
 }
 

@@ -3,15 +3,16 @@
 
 use egui::{Align, RichText};
 
-use gm_core::config::{GamePriority, PowerPlan};
+use gm_core::config::{GamePriority, PowerPlan, Theme};
 
 use super::{focus_changed, list_row};
 use crate::app::{App, BrowserPurpose};
-use crate::theme::PALETTE;
+use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Row {
     Fullscreen,
+    ThemeMode,
     ActiveFps,
     IdleFps,
     BackgroundFps,
@@ -36,10 +37,12 @@ enum Row {
     CatalogDir,
     DownloadDir,
     CatalogBudget,
+    CoverAutoFetch,
 }
 
 const ROWS: &[(&str, Row)] = &[
     ("Interfaz", Row::Fullscreen),
+    ("Interfaz", Row::ThemeMode),
     ("Interfaz", Row::ActiveFps),
     ("Interfaz", Row::IdleFps),
     ("Interfaz", Row::BackgroundFps),
@@ -64,6 +67,7 @@ const ROWS: &[(&str, Row)] = &[
     ("Catalogo", Row::CatalogDir),
     ("Catalogo", Row::DownloadDir),
     ("Catalogo", Row::CatalogBudget),
+    ("Caratulas", Row::CoverAutoFetch),
 ];
 
 pub const SETTINGS_ROWS: usize = ROWS.len();
@@ -79,6 +83,7 @@ const THROTTLE_MAX: &[usize] = &[4, 8, 12, 20, 30];
 const THROTTLE_MIN_MB: &[u64] = &[50, 80, 120, 200, 400];
 const PLANS: &[PowerPlan] = &[PowerPlan::Leave, PowerPlan::Balanced, PowerPlan::HighPerformance, PowerPlan::Ultimate];
 const PRIORITIES: &[GamePriority] = &[GamePriority::Normal, GamePriority::AboveNormal, GamePriority::High];
+const THEMES: &[Theme] = &[Theme::Dark, Theme::Light];
 
 /// Siguiente (o anterior) valor de una lista cerrada.
 fn cycle<T: PartialEq + Copy>(values: &[T], current: T, forward: bool) -> T {
@@ -99,6 +104,10 @@ impl App {
     fn row_value(&self, row: Row) -> String {
         match row {
             Row::Fullscreen => on_off(self.config.general.fullscreen).to_string(),
+            Row::ThemeMode => match self.config.general.theme {
+                Theme::Dark => "oscuro".to_string(),
+                Theme::Light => "claro".to_string(),
+            },
             Row::ActiveFps => format!("{} fps", self.config.general.active_fps),
             Row::IdleFps => format!("{} fps", self.config.general.idle_fps),
             Row::BackgroundFps => format!("{} Hz", self.config.general.background_fps),
@@ -146,12 +155,18 @@ impl App {
                 .unwrap_or_else(|| "sin configurar".to_string()),
             Row::DownloadDir => self.config.download_dir().display().to_string(),
             Row::CatalogBudget => format!("{} MB", self.config.catalog.max_index_memory_mb),
+            Row::CoverAutoFetch => match &self.config.covers.steamgrid_api_key {
+                None => "sin clave configurada".to_string(),
+                Some(key) if key.trim().is_empty() => "sin clave configurada".to_string(),
+                Some(_) => on_off(self.config.covers.auto_fetch).to_string(),
+            },
         }
     }
 
     fn row_label(row: Row) -> &'static str {
         match row {
             Row::Fullscreen => "Pantalla completa",
+            Row::ThemeMode => "Tema",
             Row::ActiveFps => "Ritmo navegando",
             Row::IdleFps => "Ritmo en reposo",
             Row::BackgroundFps => "Ritmo con un juego en marcha",
@@ -176,6 +191,7 @@ impl App {
             Row::CatalogDir => "Carpeta del catalogo",
             Row::DownloadDir => "Carpeta de descargas",
             Row::CatalogBudget => "Memoria maxima del catalogo",
+            Row::CoverAutoFetch => "Descargar caratulas automaticamente",
         }
     }
 
@@ -194,6 +210,10 @@ impl App {
             Row::PowerPlan => "Se restaura el plan original al salir del modo juego",
             Row::CatalogDir => "Carpeta con los .jsonl del repositorio Roms",
             Row::Fullscreen => "Se aplica al momento; tambien con F11",
+            Row::ThemeMode => "Blanco y negro nada mas: sin acento de color de ningun lanzador",
+            Row::CoverAutoFetch => {
+                "Via SteamGridDB. Pon tu clave gratuita en covers.steamgrid_api_key dentro de config.toml"
+            }
             _ => "",
         }
     }
@@ -204,6 +224,10 @@ impl App {
         match row {
             Row::Fullscreen => {
                 self.toggle_fullscreen();
+                return;
+            }
+            Row::ThemeMode => {
+                self.set_theme(cycle(THEMES, self.config.general.theme, forward));
                 return;
             }
             Row::ActiveFps => {
@@ -260,6 +284,7 @@ impl App {
                 self.open_browser(BrowserPurpose::PickDownloadDir);
                 return;
             }
+            Row::CoverAutoFetch => self.config.covers.auto_fetch = !self.config.covers.auto_fetch,
         }
         self.save_config();
         self.apply_live_settings();
@@ -286,7 +311,7 @@ impl App {
             for (index, section, row, value) in values {
                 if section != last_section {
                     ui.add_space(if last_section.is_empty() { 0.0 } else { 14.0 });
-                    ui.label(RichText::new(section).size(17.0).strong().color(PALETTE.accent));
+                    ui.label(RichText::new(section).size(17.0).strong().color(theme::pal().accent));
                     ui.add_space(6.0);
                     last_section = section;
                 }
@@ -298,14 +323,14 @@ impl App {
                         ui.label(RichText::new(App::row_label(row)).size(18.0));
                         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                             ui.label(RichText::new(super::ellipsize(&value, 48)).size(18.0).color(if focused {
-                                PALETTE.text
+                                theme::pal().text
                             } else {
-                                PALETTE.text_dim
+                                theme::pal().text_dim
                             }));
                         });
                     });
                     if focused && !hint.is_empty() {
-                        ui.label(RichText::new(hint).size(14.0).color(PALETTE.text_dim));
+                        ui.label(RichText::new(hint).size(14.0).color(theme::pal().text_dim));
                     }
                 });
                 if response.clicked() {

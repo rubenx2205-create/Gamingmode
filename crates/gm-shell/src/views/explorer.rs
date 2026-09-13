@@ -5,7 +5,7 @@ use egui::{Align, RichText};
 use super::{empty_state, focus_changed, list_row};
 use crate::app::{App, BrowserPurpose};
 use crate::browser::Filter;
-use crate::theme::PALETTE;
+use crate::theme;
 
 impl App {
     pub(super) fn explorer_ui(&mut self, ui: &mut egui::Ui) {
@@ -23,11 +23,11 @@ impl App {
         };
         ui.label(RichText::new(title).size(22.0).strong());
         ui.add_space(4.0);
-        ui.label(RichText::new(browser.title()).size(16.0).color(PALETTE.text_dim));
+        ui.label(RichText::new(browser.title()).size(16.0).color(theme::pal().text_dim));
         ui.add_space(10.0);
 
         if let Some(error) = &browser.error {
-            ui.label(RichText::new(error).size(17.0).color(PALETTE.bad));
+            ui.label(RichText::new(error).size(17.0).color(theme::pal().bad));
             return;
         }
         if browser.items.is_empty() {
@@ -54,7 +54,7 @@ impl App {
                                 ui.label(
                                     RichText::new(gm_core::util::format_bytes(item.size))
                                         .size(14.0)
-                                        .color(PALETTE.text_dim),
+                                        .color(theme::pal().text_dim),
                                 );
                             });
                         }
@@ -72,7 +72,7 @@ impl App {
 
         if filter == Filter::Directories {
             ui.add_space(8.0);
-            ui.label(RichText::new("Pulsa Y para usar la carpeta actual").size(16.0).color(PALETTE.accent));
+            ui.label(RichText::new("Pulsa Y para usar la carpeta actual").size(16.0).color(theme::pal().accent));
         }
 
         if let Some(position) = clicked {

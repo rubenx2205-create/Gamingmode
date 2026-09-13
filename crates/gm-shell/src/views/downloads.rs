@@ -4,7 +4,7 @@ use egui::{Align, ProgressBar, RichText};
 
 use super::{empty_state, list_row};
 use crate::app::App;
-use crate::theme::PALETTE;
+use crate::theme;
 
 impl App {
     pub(super) fn downloads_ui(&mut self, ui: &mut egui::Ui) {
@@ -26,9 +26,9 @@ impl App {
                         ui.label(RichText::new(super::ellipsize(&item.label, 64)).size(18.0));
                         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                             let color = match progress.state {
-                                gm_catalog::download::DownloadState::Done => PALETTE.good,
-                                gm_catalog::download::DownloadState::Failed(_) => PALETTE.bad,
-                                _ => PALETTE.text_dim,
+                                gm_catalog::download::DownloadState::Done => theme::pal().good,
+                                gm_catalog::download::DownloadState::Failed(_) => theme::pal().bad,
+                                _ => theme::pal().text_dim,
                             };
                             ui.label(RichText::new(progress.describe()).size(15.0).color(color));
                         });

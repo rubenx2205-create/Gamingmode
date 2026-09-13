@@ -6,7 +6,7 @@ use egui::{Align, Frame, Margin, RichText, Rounding};
 
 use super::{chip, empty_state, focus_changed, list_row};
 use crate::app::App;
-use crate::theme::PALETTE;
+use crate::theme;
 
 impl App {
     pub(super) fn resources_ui(&mut self, ui: &mut egui::Ui) {
@@ -29,7 +29,7 @@ impl App {
                         gm_core::util::format_bytes(scan.memory.used()),
                         gm_core::util::format_bytes(scan.memory.total)
                     ),
-                    PALETTE.text_dim,
+                    theme::pal().text_dim,
                 );
             }
             chip(
@@ -39,15 +39,15 @@ impl App {
                     scan.selection.targets.len(),
                     gm_core::util::format_bytes(scan.selection.total_working_set())
                 ),
-                PALETTE.accent,
+                theme::pal().accent,
             );
             let stoppable = scan.services.iter().filter(|report| report.enabled && report.running).count();
-            chip(ui, &format!("{stoppable} servicios a detener"), PALETTE.accent);
+            chip(ui, &format!("{stoppable} servicios a detener"), theme::pal().accent);
             if !scan.elevated {
-                chip(ui, "sin permisos de administrador", PALETTE.warn);
+                chip(ui, "sin permisos de administrador", theme::pal().warn);
             }
             if self.scanning() {
-                chip(ui, "midiendo...", PALETTE.warn);
+                chip(ui, "midiendo...", theme::pal().warn);
             }
         });
 
@@ -55,9 +55,9 @@ impl App {
         if !scan.helpers.is_empty() {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Se respetan:").size(15.0).color(PALETTE.text_dim));
+                ui.label(RichText::new("Se respetan:").size(15.0).color(theme::pal().text_dim));
                 for helper in &scan.helpers {
-                    chip(ui, &format!("{} · {}", helper.suite, helper.role.label()), PALETTE.good);
+                    chip(ui, &format!("{} · {}", helper.suite, helper.role.label()), theme::pal().good);
                 }
             });
         }
@@ -82,7 +82,7 @@ impl App {
                 ui.label(
                     RichText::new("Solo se ofrecen los que se pueden parar sin romper nada. Se rearrancan al salir.")
                         .size(14.0)
-                        .color(PALETTE.text_dim),
+                        .color(theme::pal().text_dim),
                 );
                 ui.add_space(8.0);
                 self.service_list(ui);
@@ -103,27 +103,27 @@ impl App {
                 let response = list_row(ui, focused, height, |ui| {
                     ui.horizontal(|ui| {
                         let mark = if report.enabled { "☑" } else { "☐" };
-                        let color = if report.enabled { PALETTE.accent } else { PALETTE.text_dim };
+                        let color = if report.enabled { theme::pal().accent } else { theme::pal().text_dim };
                         ui.label(RichText::new(mark).size(18.0).color(color));
                         ui.label(RichText::new(super::ellipsize(report.entry.display, 34)).size(17.0));
 
                         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                             if !report.running {
-                                ui.label(RichText::new("parado").size(14.0).color(PALETTE.text_dim));
+                                ui.label(RichText::new("parado").size(14.0).color(theme::pal().text_dim));
                             } else if let Some(ram) = report.ram {
                                 let text = if report.shared_process {
                                     format!("≈ {} (compartido)", gm_core::util::format_bytes(ram))
                                 } else {
                                     gm_core::util::format_bytes(ram)
                                 };
-                                ui.label(RichText::new(text).size(14.0).color(PALETTE.text_dim));
+                                ui.label(RichText::new(text).size(14.0).color(theme::pal().text_dim));
                             } else {
-                                ui.label(RichText::new("en ejecucion").size(14.0).color(PALETTE.good));
+                                ui.label(RichText::new("en ejecucion").size(14.0).color(theme::pal().good));
                             }
                         });
                     });
                     if focused {
-                        ui.label(RichText::new(report.entry.effect).size(14.0).color(PALETTE.text_dim));
+                        ui.label(RichText::new(report.entry.effect).size(14.0).color(theme::pal().text_dim));
                     }
                 });
                 if response.clicked() {
@@ -143,7 +143,7 @@ impl App {
 }
 
 fn heaviest_processes(ui: &mut egui::Ui, scan: &gm_power::SystemScan) {
-    Frame::none().fill(PALETTE.surface).rounding(Rounding::same(10.0)).inner_margin(Margin::same(14.0)).show(
+    Frame::none().fill(theme::pal().surface).rounding(Rounding::same(10.0)).inner_margin(Margin::same(14.0)).show(
         ui,
         |ui| {
             egui::ScrollArea::vertical().id_salt("procesos").auto_shrink([false, false]).show(ui, |ui| {
@@ -160,14 +160,14 @@ fn heaviest_processes(ui: &mut egui::Ui, scan: &gm_power::SystemScan) {
                             ui.label(
                                 RichText::new(gm_core::util::format_bytes(process.working_set))
                                     .size(15.0)
-                                    .color(PALETTE.text),
+                                    .color(theme::pal().text),
                             );
                             ui.add_space(10.0);
                             let (text, color) = match (target, untouched) {
-                                (Some(target), _) if target.forced => ("siempre a segundo plano", PALETTE.accent),
-                                (Some(_), _) => ("a segundo plano", PALETTE.accent),
-                                (None, Some(entry)) => (entry.reason.as_str(), PALETTE.good),
-                                (None, None) => ("sin tocar", PALETTE.text_dim),
+                                (Some(target), _) if target.forced => ("siempre a segundo plano", theme::pal().accent),
+                                (Some(_), _) => ("a segundo plano", theme::pal().accent),
+                                (None, Some(entry)) => (entry.reason.as_str(), theme::pal().good),
+                                (None, None) => ("sin tocar", theme::pal().text_dim),
                             };
                             ui.label(RichText::new(super::ellipsize(text, 30)).size(14.0).color(color));
                         });
@@ -175,7 +175,7 @@ fn heaviest_processes(ui: &mut egui::Ui, scan: &gm_power::SystemScan) {
                     ui.add_space(6.0);
                 }
                 if scan.processes.is_empty() {
-                    ui.label(RichText::new("No se pudo leer la lista de procesos.").color(PALETTE.text_dim));
+                    ui.label(RichText::new("No se pudo leer la lista de procesos.").color(theme::pal().text_dim));
                 }
             });
         },

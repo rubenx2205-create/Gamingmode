@@ -15,6 +15,8 @@ pub enum Error {
         code: u32,
     },
     NotFound(String),
+    /// Fallo hablando con un servicio externo (red, JSON inesperado, etc.).
+    Remote(String),
 }
 
 impl fmt::Display for Error {
@@ -26,6 +28,7 @@ impl fmt::Display for Error {
             Error::Unsupported(m) => write!(f, "no disponible en esta plataforma: {m}"),
             Error::Os { call, code } => write!(f, "{call} fallo (codigo {code})"),
             Error::NotFound(m) => write!(f, "no encontrado: {m}"),
+            Error::Remote(m) => write!(f, "servicio externo: {m}"),
         }
     }
 }

@@ -4,7 +4,7 @@ use egui::{Align, Margin, RichText, Sense};
 
 use super::{cover_tile, empty_state, focus_changed};
 use crate::app::{App, View};
-use crate::theme::{CARD, PALETTE};
+use crate::theme::{self, CARD};
 
 impl App {
     pub(super) fn library_view_ui(&mut self, ui: &mut egui::Ui) {
@@ -27,10 +27,14 @@ impl App {
 
         // Referencias a campos sueltos: asi el cierre no toma prestado `self`
         // entero y se puede seguir dibujando sin pelearse con el prestamo.
+        // `covers` es un campo distinto de `library`, asi que pedir prestado
+        // uno inmutable y el otro mutable a la vez no molesta al compilador.
         let focus = self.library_focus;
         let library = &self.library;
         let indices = &self.library_view;
+        let covers = &mut self.covers;
         let mut clicked: Option<usize> = None;
+        let mut to_fetch: Vec<(String, String)> = Vec::new();
         let scroll_to_focus = focus_changed(ui.ctx(), "foco_biblioteca", focus);
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -49,7 +53,12 @@ impl App {
                         if !game.launch.is_available() {
                             subtitle = format!("⚠ no encontrado · {subtitle}");
                         }
-                        cover_tile(ui, rect, &game.title, subtitle.trim(), focused);
+
+                        let texture = covers.get(ui.ctx(), &game.id, game.cover.as_deref());
+                        if texture.is_none() && game.cover.is_none() {
+                            to_fetch.push((game.id.clone(), game.title.clone()));
+                        }
+                        cover_tile(ui, rect, &game.title, subtitle.trim(), focused, texture.as_ref());
 
                         if response.clicked() {
                             clicked = Some(position);
@@ -63,6 +72,12 @@ impl App {
             }
             ui.add_space(20.0);
         });
+
+        // Solo se piden las caratulas de lo que de verdad esta en pantalla:
+        // el propio bucle de dibujado ya acota la lista a una pagina.
+        for (game_id, title) in to_fetch {
+            self.maybe_fetch_cover(&game_id, &title);
+        }
 
         if let Some(position) = clicked {
             self.library_focus = position;
@@ -116,7 +131,7 @@ impl App {
                         stats.get("horas").copied().unwrap_or(0)
                     ))
                     .size(15.0)
-                    .color(PALETTE.text_dim),
+                    .color(theme::pal().text_dim),
                 );
             });
         });

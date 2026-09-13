@@ -78,6 +78,14 @@ Primera iteracion funcional:
   conexion en caliente y captura del **boton central del mando** (ordinal 100 de
   `xinput1_4.dll`), que abre el panel rapido incluso con un juego a pantalla
   completa.
+- **Detecta la marca del mando** (Xbox, PlayStation, o teclado y raton si no
+  hay ninguno conectado) leyendo el VID del dispositivo via Raw Input, y la
+  ayuda de botones de toda la interfaz cambia sola: A/B/X/Y en un mando de
+  Xbox, ✕○□△ en un DualShock/DualSense, Enter/Esc/F2... con teclado. Cambia en
+  caliente segun con que se juega, sin tocar nada.
+- **Tema claro/oscuro estrictamente monocromo**: blanco, negro y grises, sin
+  acento de color de ninguna marca ni lanzador. Se cambia al momento desde los
+  ajustes.
 - **Motor de optimizacion reversible** con busqueda automatica de procesos
   pesados, catalogo seguro de servicios y lista de intocables.
 - **Biblioteca propia**: cualquier `.exe` desde un explorador de ficheros
@@ -85,6 +93,9 @@ Primera iteracion funcional:
 - **Catalogo de ROMs** leyendo los `.jsonl` del repositorio
   [`Roms`](https://github.com/rubenx2205-create/Roms), con busqueda, presupuesto
   de memoria y descargas reanudables.
+- **Caratulas reales via SteamGridDB** (opcional): se buscan solas en segundo
+  plano para los juegos que aparecen en pantalla, sin ventanas ni dialogos que
+  interrumpan la pantalla completa.
 
 ## Arquitectura
 
@@ -121,18 +132,26 @@ cargo test --workspace
 
 ## Controles
 
-| Mando | Teclado | Accion |
-|---|---|---|
-| Cruceta / stick izquierdo | Flechas o WASD | Mover el foco |
-| A | Enter | Aceptar / jugar / descargar / marcar |
-| B | Esc | Volver / limpiar busqueda |
-| X | F2 | Accion contextual (anadir `.exe`, quitar, volver a medir) |
-| Y | F | Favorito / limpiar descargas / seleccion recomendada |
-| LB / RB | Mayus+Tab / Tab | Cambiar orden / cambiar de seccion |
-| Gatillos | RePag / AvPag | Saltar de pagina |
-| Select | `/` | Buscar |
-| Start | F1 | Panel rapido |
-| **Boton central del mando** | F12 | Panel rapido, tambien con un juego en marcha |
+La ayuda de botones de la barra inferior ensena siempre el glifo correcto para
+lo que se este usando; aqui va la tabla completa con las tres variantes:
+
+| Xbox | PlayStation | Teclado | Accion |
+|---|---|---|---|
+| Cruceta / stick | Cruceta / stick | Flechas o WASD | Mover el foco |
+| A | ✕ | Enter | Aceptar / jugar / descargar / marcar |
+| B | ○ | Esc | Volver / limpiar busqueda |
+| X | □ | F2 | Accion contextual (anadir `.exe`, quitar, volver a medir) |
+| Y | △ | F | Favorito / limpiar descargas / seleccion recomendada |
+| LB / RB | L1 / R1 | Mayus+Tab / Tab | Cambiar orden / cambiar de seccion |
+| LT / RT | L2 / R2 | RePag / AvPag | Saltar de pagina |
+| Select | Share | `/` | Buscar |
+| Start | Options | F1 | Panel rapido |
+| **Boton central del mando** | **PS** | F12 | Panel rapido, tambien con un juego en marcha |
+
+No hay que elegir nada: el shell detecta la marca del mando leyendo su VID por
+Raw Input (Sony = PlayStation, cualquier otra cosa = Xbox, que es el esquema al
+que XInput normaliza de todas formas) y cambia de variante sola en cuanto se
+pulsa un boton. Sin ningun mando conectado se ensenan las teclas.
 
 ## Que hace exactamente el modo juego
 
@@ -205,15 +224,36 @@ stop_services = true
 services = []                 # vacio = seleccion recomendada del catalogo
 ```
 
+Y el tema y las caratulas:
+
+```toml
+[general]
+theme = "dark"                 # "dark" o "light"; tambien desde los ajustes
+
+[covers]
+steamgrid_api_key = "..."      # gratis en steamgriddb.com/profile/preferences/api
+auto_fetch = true              # sin clave, no hace nada
+```
+
 ## Catalogo de ROMs
 
 En *Catalogo* → **X** se elige la carpeta con los `.jsonl` del repositorio
 `Roms` (un clon local). Cada `.jsonl` es una plataforma; se cargan de una en una
 y lo descargado se anade solo a la biblioteca.
 
+## Caratulas (SteamGridDB)
+
+[SteamGridDB](https://www.steamgriddb.com) es una base de datos comunitaria de
+arte de caratulas, no una tienda: no hace falta cuenta para jugar, no lanza
+nada y no sabe de compras. Con una clave gratuita puesta en `config.toml` (ver
+arriba), el shell busca sola la caratula de cada juego que aparece en
+pantalla, en un hilo aparte, y la sustituye por la generada en cuanto llega.
+Sin clave, esta pieza simplemente no hace nada: no hay ninguna otra
+dependencia de red en el shell aparte de las descargas del catalogo.
+
 ## Pendiente
 
-- Caratulas reales (el modelo ya guarda la ruta; ahora se generan a partir del
-  titulo).
 - Detectar el modelo de portatil para ajustar los valores por defecto.
 - Sonidos de interfaz y teclado en pantalla para buscar con el mando.
+- Bordes redondeados en las caratulas reales (ahora mismo se recortan en
+  rectangulo; egui no da rondeado nativo al recortar una imagen).

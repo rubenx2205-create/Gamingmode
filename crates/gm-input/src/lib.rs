@@ -12,11 +12,13 @@
 //!    procesado, incluida la deteccion de flancos.
 
 pub mod backend;
+pub mod kind;
 pub mod pad;
 
 use std::time::{Duration, Instant};
 
 use backend::{PadBackend, PlatformBackend, MAX_PADS};
+pub use kind::PadKind;
 use pad::{apply_deadzone, button, PadSnapshot};
 
 /// Acciones de navegacion de alto nivel. Es el unico vocabulario que entiende
@@ -119,6 +121,11 @@ pub struct InputHub {
     backend: Option<Box<dyn PadBackend>>,
     backend_name: String,
     guide_supported: bool,
+    /// Marca del mando conectado (Xbox/PlayStation), para que la interfaz
+    /// ensene el boton correcto. Se recalcula solo al conectar un mando
+    /// nuevo, no en cada frame: leer el VID via Raw Input recorre la lista
+    /// entera de dispositivos de entrada del sistema.
+    pad_kind: Option<PadKind>,
     trackers: [PadTracker; MAX_PADS],
     last_rescan: Option<Instant>,
     last_activity: Option<Instant>,
@@ -135,6 +142,7 @@ impl InputHub {
             backend: backend.map(|b| Box::new(b) as Box<dyn PadBackend>),
             backend_name,
             guide_supported,
+            pad_kind: None,
             trackers: Default::default(),
             last_rescan: None,
             last_activity: None,
@@ -149,6 +157,7 @@ impl InputHub {
             backend: None,
             backend_name: "desactivado".to_string(),
             guide_supported: false,
+            pad_kind: None,
             trackers: Default::default(),
             last_rescan: None,
             last_activity: None,
@@ -162,6 +171,11 @@ impl InputHub {
 
     pub fn guide_supported(&self) -> bool {
         self.guide_supported
+    }
+
+    /// Marca del mando conectado ahora mismo. `None` sin mandos conectados.
+    pub fn pad_kind(&self) -> Option<PadKind> {
+        self.pad_kind
     }
 
     pub fn settings(&self) -> &gm_core::config::Input {
@@ -235,6 +249,11 @@ impl InputHub {
             self.trackers[index].connected = true;
             if !was_connected {
                 log::info!("mando {index} conectado");
+                // Se relee la marca del mando: puede haber cambiado el unico
+                // conectado (por ejemplo, un DualSense sustituyendo a un
+                // mando de Xbox), y es una lectura barata frente al resto del
+                // sondeo, que ya se hace solo en reconexiones.
+                self.pad_kind = kind::detect_pad_kind();
                 // No se procesa el primer paquete: si el usuario tenia un boton
                 // pulsado al enchufar, no debe contar como pulsacion.
                 self.trackers[index].packet = snapshot.packet;
@@ -256,6 +275,9 @@ impl InputHub {
         }
 
         frame.connected_pads = self.connected_pads();
+        if frame.connected_pads == 0 {
+            self.pad_kind = None;
+        }
         if !frame.actions.is_empty() {
             frame.activity = true;
             self.last_activity = Some(now);

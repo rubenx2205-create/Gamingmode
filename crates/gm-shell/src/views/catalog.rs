@@ -4,7 +4,7 @@ use egui::{Align, Margin, RichText, Sense};
 
 use super::{cover_tile, empty_state, focus_changed, list_row};
 use crate::app::{App, BrowserPurpose};
-use crate::theme::{CARD, PALETTE};
+use crate::theme::{self, CARD};
 
 impl App {
     pub(super) fn catalog_ui(&mut self, ui: &mut egui::Ui) {
@@ -12,7 +12,7 @@ impl App {
             ui.label(
                 RichText::new(format!("Cargando {}... ({:.1} s)", gm_catalog::display_name(id), elapsed.as_secs_f32()))
                     .size(20.0)
-                    .color(PALETTE.accent),
+                    .color(theme::pal().accent),
             );
             ui.add_space(8.0);
             ui.spinner();
@@ -33,7 +33,7 @@ impl App {
         }
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new(self.catalog.memory_summary()).size(15.0).color(PALETTE.text_dim));
+            ui.label(RichText::new(self.catalog.memory_summary()).size(15.0).color(theme::pal().text_dim));
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Cambiar carpeta").clicked() {
                     self.open_browser(BrowserPurpose::PickCatalogDir);
@@ -58,7 +58,7 @@ impl App {
                         let (rect, response) = ui.allocate_exact_size(CARD, Sense::click());
                         let subtitle =
                             format!("{} · {}", info.family.label(), gm_core::util::format_bytes(info.size_bytes));
-                        cover_tile(ui, rect, &info.display, &subtitle, position == focus);
+                        cover_tile(ui, rect, &info.display, &subtitle, position == focus, None);
                         if response.clicked() {
                             clicked = Some(position);
                         }
@@ -104,7 +104,9 @@ impl App {
                 response.surrender_focus();
             }
             ui.add_space(14.0);
-            ui.label(RichText::new(format!("{} resultados", self.entry_hits.len())).size(15.0).color(PALETTE.text_dim));
+            ui.label(
+                RichText::new(format!("{} resultados", self.entry_hits.len())).size(15.0).color(theme::pal().text_dim),
+            );
         });
         ui.add_space(10.0);
 
@@ -127,7 +129,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(super::ellipsize(&entry.name, 72)).size(18.0));
                         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(RichText::new(&entry.ext).size(15.0).color(PALETTE.text_dim));
+                            ui.label(RichText::new(&entry.ext).size(15.0).color(theme::pal().text_dim));
                         });
                     });
                 });

@@ -5,7 +5,7 @@ use egui::{Align, Frame, Margin, RichText, Rounding};
 
 use super::list_row;
 use crate::app::{App, ToastKind, View};
-use crate::theme::PALETTE;
+use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuickOption {
@@ -133,7 +133,7 @@ impl App {
 
     /// Detalle de lo que el modo juego ha tocado en el sistema.
     fn power_report_ui(&mut self, ui: &mut egui::Ui) {
-        Frame::none().fill(PALETTE.surface).rounding(Rounding::same(10.0)).inner_margin(Margin::same(18.0)).show(
+        Frame::none().fill(theme::pal().surface).rounding(Rounding::same(10.0)).inner_margin(Margin::same(18.0)).show(
             ui,
             |ui| {
                 ui.set_min_width(460.0);
@@ -142,7 +142,7 @@ impl App {
 
                 if self.memory.total > 0 {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("RAM en uso").size(16.0).color(PALETTE.text_dim));
+                        ui.label(RichText::new("RAM en uso").size(16.0).color(theme::pal().text_dim));
                         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                             ui.label(
                                 RichText::new(format!(
@@ -157,7 +157,7 @@ impl App {
                     ui.add_space(6.0);
                 }
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Mandos").size(16.0).color(PALETTE.text_dim));
+                    ui.label(RichText::new("Mandos").size(16.0).color(theme::pal().text_dim));
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         ui.label(RichText::new(self.input.backend_name()).size(15.0));
                     });
@@ -169,18 +169,18 @@ impl App {
                         ui.label(
                             RichText::new("El modo juego no se ha activado en esta sesion.")
                                 .size(16.0)
-                                .color(PALETTE.text_dim),
+                                .color(theme::pal().text_dim),
                         );
                     }
                     Some(report) => {
-                        ui.label(RichText::new(report.summary()).size(16.0).color(PALETTE.accent));
+                        ui.label(RichText::new(report.summary()).size(16.0).color(theme::pal().accent));
                         ui.add_space(8.0);
                         egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                             for entry in &report.entries {
                                 let (icon, color) = match entry.outcome {
-                                    gm_power::Outcome::Applied => ("✔", PALETTE.good),
-                                    gm_power::Outcome::Skipped => ("–", PALETTE.text_dim),
-                                    gm_power::Outcome::Failed => ("✖", PALETTE.bad),
+                                    gm_power::Outcome::Applied => ("✔", theme::pal().good),
+                                    gm_power::Outcome::Skipped => ("–", theme::pal().text_dim),
+                                    gm_power::Outcome::Failed => ("✖", theme::pal().bad),
                                 };
                                 ui.label(
                                     RichText::new(format!("{icon} [{}] {}", entry.area, entry.message))
@@ -197,7 +197,7 @@ impl App {
                                      la prioridad de procesos de otros usuarios.",
                                 )
                                 .size(14.0)
-                                .color(PALETTE.warn),
+                                .color(theme::pal().warn),
                             );
                         }
                     }

@@ -1,7 +1,121 @@
 //! Navegacion: teclado y mando hablan el mismo idioma (`NavAction`) y la
 //! rejilla se mueve con aritmetica pura, facil de probar.
 
-use gm_input::NavAction;
+use gm_input::{NavAction, PadKind};
+
+/// Con que se esta jugando ahora mismo, a efectos de que boton ensenar en
+/// pantalla. Cambia solo: se recalcula cada frame segun de donde vino la
+/// ultima pulsacion, igual que hace Steam o cualquier consola.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputSource {
+    Xbox,
+    PlayStation,
+    KeyboardMouse,
+}
+
+impl InputSource {
+    pub fn from_pad_kind(kind: PadKind) -> Self {
+        match kind {
+            PadKind::Xbox => InputSource::Xbox,
+            PadKind::PlayStation => InputSource::PlayStation,
+        }
+    }
+
+    /// Nombre corto para la cabecera ("1 mando (PlayStation)").
+    pub fn short_name(self) -> &'static str {
+        match self {
+            InputSource::Xbox => "Xbox",
+            InputSource::PlayStation => "PlayStation",
+            InputSource::KeyboardMouse => "teclado",
+        }
+    }
+}
+
+/// Hubo alguna pulsacion de teclado (o clic de raton) este frame? Cualquier
+/// tecla cuenta, no solo las que forman parte de `keyboard_actions`: escribir
+/// "z" en el buscador no es una accion de navegacion, pero sigue siendo
+/// evidencia de que se esta jugando con teclado y no con mando.
+pub fn keyboard_or_mouse_activity(ctx: &egui::Context) -> bool {
+    ctx.input(|input| {
+        input.pointer.any_click()
+            || input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Key { pressed: true, .. } | egui::Event::Text(_)))
+    })
+}
+
+/// Como se llama, en esta fuente, el boton que dispara `action`.
+///
+/// Las direcciones usan siempre el mismo glifo neutro: cruceta, stick y
+/// flechas son la misma idea con otra forma, y no hace falta distinguir marca
+/// para ellas. Los botones de cara si cambian: XInput normaliza cualquier
+/// mando al esquema A/B/X/Y, pero un DualSense fisico no tiene esas letras
+/// serigrafiadas.
+pub fn button_label(source: InputSource, action: NavAction) -> &'static str {
+    match action {
+        NavAction::Up => "▲",
+        NavAction::Down => "▼",
+        NavAction::Left => "◀",
+        NavAction::Right => "▶",
+        _ => match source {
+            InputSource::KeyboardMouse => keyboard_label(action),
+            InputSource::Xbox => xbox_label(action),
+            InputSource::PlayStation => playstation_label(action),
+        },
+    }
+}
+
+fn xbox_label(action: NavAction) -> &'static str {
+    match action {
+        NavAction::Accept => "A",
+        NavAction::Back => "B",
+        NavAction::Context => "X",
+        NavAction::Favorite => "Y",
+        NavAction::Menu => "Start",
+        NavAction::Search => "Select",
+        NavAction::TabPrev => "LB",
+        NavAction::TabNext => "RB",
+        NavAction::PageUp => "LT",
+        NavAction::PageDown => "RT",
+        NavAction::Guide => "Guia",
+        NavAction::Up | NavAction::Down | NavAction::Left | NavAction::Right => unreachable!("filtrado arriba"),
+    }
+}
+
+fn playstation_label(action: NavAction) -> &'static str {
+    match action {
+        NavAction::Accept => "✕",
+        NavAction::Back => "○",
+        NavAction::Context => "□",
+        NavAction::Favorite => "△",
+        NavAction::Menu => "Options",
+        NavAction::Search => "Share",
+        NavAction::TabPrev => "L1",
+        NavAction::TabNext => "R1",
+        NavAction::PageUp => "L2",
+        NavAction::PageDown => "R2",
+        NavAction::Guide => "PS",
+        NavAction::Up | NavAction::Down | NavAction::Left | NavAction::Right => unreachable!("filtrado arriba"),
+    }
+}
+
+fn keyboard_label(action: NavAction) -> &'static str {
+    match action {
+        NavAction::Accept => "Enter",
+        NavAction::Back => "Esc",
+        NavAction::Context => "F2",
+        NavAction::Favorite => "F",
+        NavAction::Menu => "F1",
+        NavAction::Search => "/",
+        NavAction::TabPrev => "Mayus+Tab",
+        NavAction::TabNext => "Tab",
+        NavAction::PageUp => "RePag",
+        NavAction::PageDown => "AvPag",
+        NavAction::Guide => "F12",
+        NavAction::Up | NavAction::Down | NavAction::Left | NavAction::Right => unreachable!("filtrado arriba"),
+    }
+}
 
 /// Traduce las teclas pulsadas este frame a acciones de navegacion.
 ///
@@ -200,5 +314,26 @@ mod tests {
         // 3 tarjetas de 190 + 2 huecos de 14 = 598 <= 600
         assert_eq!(columns_for(600.0, 190.0, 14.0), 3);
         assert_eq!(columns_for(100.0, 190.0, 14.0), 1, "siempre al menos una");
+    }
+
+    #[test]
+    fn cada_fuente_tiene_su_propio_glifo_para_aceptar() {
+        assert_eq!(button_label(InputSource::Xbox, NavAction::Accept), "A");
+        assert_eq!(button_label(InputSource::PlayStation, NavAction::Accept), "✕");
+        assert_eq!(button_label(InputSource::KeyboardMouse, NavAction::Accept), "Enter");
+    }
+
+    #[test]
+    fn las_direcciones_no_dependen_de_la_fuente() {
+        for source in [InputSource::Xbox, InputSource::PlayStation, InputSource::KeyboardMouse] {
+            assert_eq!(button_label(source, NavAction::Up), "▲");
+            assert_eq!(button_label(source, NavAction::Right), "▶");
+        }
+    }
+
+    #[test]
+    fn la_marca_del_mando_se_traduce_a_fuente_de_entrada() {
+        assert_eq!(InputSource::from_pad_kind(PadKind::Xbox), InputSource::Xbox);
+        assert_eq!(InputSource::from_pad_kind(PadKind::PlayStation), InputSource::PlayStation);
     }
 }

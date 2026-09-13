@@ -18,7 +18,18 @@ pub struct Config {
     pub input: Input,
     pub power: Power,
     pub catalog: Catalog,
+    pub covers: Covers,
     pub emulators: Vec<Emulator>,
+}
+
+/// Esquema de color de la interfaz. Deliberadamente monocromo (blanco, negro
+/// y grises): sin marca, sin acento de color de ningun lanzador.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    Light,
+    #[default]
+    Dark,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +37,9 @@ pub struct Config {
 pub struct General {
     /// Arrancar en pantalla completa sin bordes (estilo Big Picture).
     pub fullscreen: bool,
+    /// Blanco y negro, claro u oscuro. Se cambia al momento desde los
+    /// ajustes, sin reiniciar el shell.
+    pub theme: Theme,
     /// FPS mientras el usuario navega.
     pub active_fps: u32,
     /// FPS cuando no ha habido entrada durante `idle_after_secs`.
@@ -45,6 +59,7 @@ impl Default for General {
     fn default() -> Self {
         Self {
             fullscreen: true,
+            theme: Theme::Dark,
             active_fps: 60,
             idle_fps: 10,
             idle_after_secs: 8,
@@ -181,6 +196,22 @@ impl Default for Power {
             restore_on_exit: true,
         }
     }
+}
+
+/// Caratulas reales de los juegos, via SteamGridDB.
+///
+/// Es la unica pieza de la interfaz que habla con un servicio externo, y es
+/// puramente una base de datos comunitaria de arte de caratulas: no requiere
+/// cuenta para jugar, no lanza nada y no sabe de tiendas ni de compras. Sin
+/// clave configurada, esta seccion no hace nada.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Covers {
+    /// Clave gratuita de https://www.steamgriddb.com/profile/preferences/api
+    pub steamgrid_api_key: Option<String>,
+    /// Buscar la caratula sola en cuanto un juego sin caratula aparece en
+    /// pantalla. Sin clave configurada no tiene efecto.
+    pub auto_fetch: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
