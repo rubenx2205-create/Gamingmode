@@ -1107,7 +1107,8 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.first_frame {
+        let first_frame = self.first_frame;
+        if first_frame {
             self.first_frame = false;
             // La peticion de pantalla completa hecha al crear la ventana la
             // ignoran algunos controladores y gestores de ventanas; se repite
@@ -1115,6 +1116,14 @@ impl eframe::App for App {
             self.request_window_mode();
         }
         self.apply_window_mode(ctx);
+        if first_frame {
+            // La ventana nace oculta (ver main.rs) para no ensenar ni una
+            // fraccion de segundo el tamano de ventana normal antes de saltar
+            // a pantalla completa: se revela justo despues de aplicar el modo
+            // de pantalla, asi que el primer frame visible ya es el
+            // definitivo.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        }
         if self.pending_theme_apply {
             crate::theme::install(ctx, self.config.general.ui_scale);
             self.pending_theme_apply = false;
