@@ -3,7 +3,7 @@
 
 use gm_core::error::{Error, Result};
 
-use super::{MemoryStatus, ProcInfo, ServiceRunState};
+use super::{MemoryStatus, ProcInfo, ProcessUsage, ServiceRunState, ServiceStatus};
 use crate::guid::SchemeGuid;
 
 const MSG: &str = "el modo juego solo modifica el sistema en Windows";
@@ -37,6 +37,14 @@ pub fn start_service(_name: &str) -> Result<()> {
 }
 
 pub fn list_processes() -> Result<Vec<ProcInfo>> {
+    Ok(Vec::new())
+}
+
+pub fn sample_processes() -> Result<Vec<ProcessUsage>> {
+    Ok(Vec::new())
+}
+
+pub fn list_service_status() -> Result<Vec<ServiceStatus>> {
     Ok(Vec::new())
 }
 

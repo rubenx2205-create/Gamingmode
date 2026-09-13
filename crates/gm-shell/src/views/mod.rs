@@ -7,6 +7,7 @@ mod downloads;
 mod explorer;
 mod library;
 mod quick;
+mod resources;
 mod settings;
 
 pub use settings::SETTINGS_ROWS;
@@ -29,6 +30,7 @@ impl App {
                 View::Catalog => self.catalog_ui(ui),
                 View::CatalogEntries => self.entries_ui(ui),
                 View::Downloads => self.downloads_ui(ui),
+                View::Resources => self.resources_ui(ui),
                 View::Settings => self.settings_ui(ui),
                 View::Quick => self.quick_ui(ui),
                 View::Browser => self.explorer_ui(ui),
@@ -114,6 +116,12 @@ impl App {
                 ("RB", "Descargas"),
             ],
             View::Downloads => &[("B", "Volver"), ("X", "Cancelar"), ("Y", "Limpiar terminadas")],
+            View::Resources => &[
+                ("A", "Marcar/desmarcar servicio"),
+                ("B", "Volver"),
+                ("X", "Volver a medir"),
+                ("Y", "Seleccion recomendada"),
+            ],
             View::Settings => &[("A/Der", "Cambiar"), ("Izq", "Atras"), ("B", "Guardar y volver")],
             View::Quick => &[("A", "Elegir"), ("B", "Cerrar")],
             View::Browser => &[("A", "Abrir"), ("B", "Subir"), ("Y", "Usar esta carpeta")],
@@ -169,6 +177,7 @@ impl App {
                 self.open_platform.as_deref().map(gm_catalog::display_name).unwrap_or_else(|| "Catalogo".to_string())
             }
             View::Downloads => "Descargas".to_string(),
+            View::Resources => "Recursos del sistema".to_string(),
             View::Settings => "Ajustes".to_string(),
             View::Quick => "Panel rapido".to_string(),
             View::Browser => "Explorador".to_string(),

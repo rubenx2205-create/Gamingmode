@@ -30,7 +30,7 @@ impl App {
                     gm_core::Launch::Rom { platform, .. } => {
                         format!("ROM · {}", gm_catalog::display_name(platform))
                     }
-                    gm_core::Launch::Uri { .. } => "Lanzador externo".to_string(),
+                    gm_core::Launch::Shortcut { .. } => "Atajo del sistema".to_string(),
                 };
                 ui.label(RichText::new(kind).size(18.0).color(PALETTE.accent));
                 ui.add_space(16.0);

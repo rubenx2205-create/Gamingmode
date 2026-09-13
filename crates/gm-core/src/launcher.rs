@@ -15,8 +15,8 @@ pub struct Session {
     pub title: String,
     pub pid: Option<u32>,
     pub started: Instant,
-    /// Las entradas por URI (steam://...) las arranca el lanzador externo, asi
-    /// que no tenemos un proceso hijo al que seguirle la pista.
+    /// Los atajos los resuelve el sistema, que arranca el programa por su
+    /// cuenta: no queda un proceso hijo al que seguirle la pista.
     pub tracked: bool,
     child: Option<Child>,
 }
@@ -80,7 +80,7 @@ pub fn launch(game: &Game, config: &Config) -> Result<Session> {
             }
             (cmd, true)
         }
-        Launch::Uri { uri } => (uri_command(uri), false),
+        Launch::Shortcut { target } => (shortcut_command(target), false),
     };
 
     let mut command = command;
@@ -102,19 +102,19 @@ pub fn launch(game: &Game, config: &Config) -> Result<Session> {
 }
 
 #[cfg(windows)]
-fn uri_command(uri: &str) -> Command {
+fn shortcut_command(target: &str) -> Command {
     // `start` es un builtin de cmd, no un ejecutable: hay que invocarlo asi.
-    // El "" inicial es el titulo de ventana, si no cmd interpreta el URI como
-    // titulo cuando lleva comillas.
+    // El "" inicial es el titulo de ventana; sin el, cmd toma el destino como
+    // titulo cuando va entre comillas.
     let mut cmd = Command::new("cmd");
-    cmd.args(["/C", "start", "", uri]);
+    cmd.args(["/C", "start", "", target]);
     cmd
 }
 
 #[cfg(not(windows))]
-fn uri_command(uri: &str) -> Command {
+fn shortcut_command(target: &str) -> Command {
     let mut cmd = Command::new("xdg-open");
-    cmd.arg(uri);
+    cmd.arg(target);
     cmd
 }
 

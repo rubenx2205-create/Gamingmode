@@ -6,14 +6,22 @@
 //! proceso muere sin avisar.
 
 pub mod guid;
+pub mod protect;
+pub mod scan;
+pub mod select;
+pub mod services;
 pub mod snapshot;
 pub mod sys;
 
 use std::path::PathBuf;
 
 use gm_core::config::{Power, PowerPlan};
+pub use protect::{Helper, HelperRole};
+pub use scan::{scan, ServiceReport, SystemScan};
+pub use select::Selection;
+pub use services::ServiceEntry;
 pub use snapshot::{ProcessState, ServiceState, Snapshot};
-pub use sys::{memory_status, MemoryStatus};
+pub use sys::{list_service_status, memory_status, sample_processes, MemoryStatus, ProcessUsage, ServiceStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -85,6 +93,8 @@ pub struct Optimizer {
     snapshot_path: PathBuf,
     /// `Some` mientras el modo juego esta activo.
     engaged: Option<Snapshot>,
+    /// Proceso del juego en marcha, para no degradarlo por error.
+    game_pid: Option<u32>,
 }
 
 impl Optimizer {
@@ -93,7 +103,12 @@ impl Optimizer {
     }
 
     pub fn with_snapshot_path(config: Power, snapshot_path: PathBuf) -> Self {
-        Self { config, snapshot_path, engaged: None }
+        Self { config, snapshot_path, engaged: None, game_pid: None }
+    }
+
+    /// El shell avisa de que proceso es el juego para dejarlo en paz.
+    pub fn set_game_pid(&mut self, pid: Option<u32>) {
+        self.game_pid = pid;
     }
 
     pub fn set_config(&mut self, config: Power) {
@@ -286,19 +301,42 @@ impl Optimizer {
         }
     }
 
+    /// Servicios que se van a intentar detener: los pedidos en la
+    /// configuracion, o la seleccion recomendada si no se ha tocado nada.
+    /// Siempre pasados por el catalogo seguro.
+    pub fn planned_services(&self) -> Vec<String> {
+        if !self.config.stop_services {
+            return Vec::new();
+        }
+        if self.config.services.is_empty() {
+            services::defaults()
+        } else {
+            services::sanitize(&self.config.services).0
+        }
+    }
+
     fn capture_services(&self, snapshot: &mut Snapshot, report: &mut Report) {
-        if self.config.stop_services.is_empty() {
+        if !self.config.stop_services {
+            report.skipped("servicios", "desactivado en la configuracion");
+            return;
+        }
+        let (_, rejected) = services::sanitize(&self.config.services);
+        for name in rejected {
+            report.skipped("servicios", format!("{name} no esta en el catalogo seguro: no se toca"));
+        }
+        let planned = self.planned_services();
+        if planned.is_empty() {
             return;
         }
         if !sys::is_elevated() {
             report.skipped("servicios", "hace falta ejecutar el modo juego como administrador para parar servicios");
             return;
         }
-        for name in &self.config.stop_services {
-            match sys::service_state(name) {
-                Ok(state) => snapshot
-                    .services
-                    .push(ServiceState { name: name.clone(), was_running: state == sys::ServiceRunState::Running }),
+        for name in planned {
+            match sys::service_state(&name) {
+                Ok(state) => {
+                    snapshot.services.push(ServiceState { name, was_running: state == sys::ServiceRunState::Running })
+                }
                 Err(e) => report.skipped("servicios", format!("{name}: {e}")),
             }
         }
@@ -317,50 +355,63 @@ impl Optimizer {
         }
     }
 
+    /// Busca lo que mas pesa ahora mismo y lo aparta, respetando todo lo que
+    /// esta protegido.
     fn throttle_processes(&self, snapshot: &mut Snapshot, report: &mut Report) {
-        if self.config.throttle_processes.is_empty() {
-            return;
-        }
-        let processes = match sys::list_processes() {
+        let processes = match sys::sample_processes() {
             Ok(processes) => processes,
             Err(e) => {
-                report.failed("procesos", format!("no se pudo enumerar procesos: {e}"));
+                report.failed("procesos", format!("no se pudo medir el consumo de procesos: {e}"));
                 return;
             }
         };
-        let me = sys::current_pid();
 
-        for process in processes {
-            if process.pid == me || process.pid == 0 {
-                continue;
+        // Lo primero que ve el usuario en el informe: que utilidades suyas se
+        // han reconocido y respetado.
+        if self.config.protect_handheld_helpers {
+            let helpers = protect::detect_helpers(processes.iter().map(|process| process.name.as_str()));
+            for helper in helpers {
+                report.skipped("protegidos", format!("{} ({}) se deja intacto", helper.suite, helper.role.label()));
             }
-            if !self.config.throttle_processes.iter().any(|name| name.eq_ignore_ascii_case(&process.name)) {
-                continue;
-            }
+        }
 
-            let previous = sys::priority_class(process.pid).unwrap_or(sys::priority::NORMAL);
+        let selection = select::select_throttle_targets(&processes, &self.config, sys::current_pid(), self.game_pid);
+
+        if selection.targets.is_empty() {
+            report.skipped("procesos", "no hay nada de fondo que merezca la pena degradar");
+            return;
+        }
+
+        for target in &selection.targets {
+            let previous = sys::priority_class(target.pid).unwrap_or(sys::priority::NORMAL);
             if previous == sys::priority::IDLE {
-                continue; // ya estaba en minimos, no hay nada que guardar
+                continue; // ya estaba en minimos: no hay estado que guardar
             }
-            if let Err(e) = sys::set_priority_class(process.pid, sys::priority::IDLE) {
-                report.skipped("procesos", format!("{} (pid {}): {e}", process.name, process.pid));
+            if let Err(e) = sys::set_priority_class(target.pid, sys::priority::IDLE) {
+                report.skipped("procesos", format!("{} (pid {}): {e}", target.name, target.pid));
                 continue;
             }
 
-            let eco = self.config.eco_qos_background && sys::set_eco_qos(process.pid, true).is_ok();
+            let eco = self.config.eco_qos_background && sys::set_eco_qos(target.pid, true).is_ok();
             if self.config.trim_working_sets {
-                let _ = sys::trim_working_set(process.pid);
+                let _ = sys::trim_working_set(target.pid);
             }
 
             snapshot.processes.push(ProcessState {
-                pid: process.pid,
-                name: process.name.clone(),
+                pid: target.pid,
+                name: target.name.clone(),
                 previous_priority: previous,
                 eco_qos_applied: eco,
             });
             report.applied(
                 "procesos",
-                format!("{} en segundo plano{}", process.name, if eco { " (EcoQoS)" } else { "" }),
+                format!(
+                    "{} ({}){}{}",
+                    target.name,
+                    gm_core::util::format_bytes(target.working_set),
+                    if eco { " · EcoQoS" } else { "" },
+                    if target.forced { " · siempre" } else { "" }
+                ),
             );
         }
     }

@@ -47,7 +47,7 @@ pub enum NavAction {
     PageUp,
     /// Gatillo derecho / AvPag
     PageDown,
-    /// Boton Guia (Xbox) / F12: panel rapido, tambien durante el juego.
+    /// Boton central del mando / F12: panel rapido, tambien durante el juego.
     Guide,
 }
 

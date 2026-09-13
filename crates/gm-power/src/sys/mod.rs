@@ -13,6 +13,28 @@ pub struct ProcInfo {
     pub name: String,
 }
 
+/// Consumo de un proceso en un instante dado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessUsage {
+    pub pid: u32,
+    pub name: String,
+    /// RAM fisica que ocupa ahora mismo.
+    pub working_set: u64,
+    /// Memoria comprometida (incluye lo paginado a disco).
+    pub private_bytes: u64,
+}
+
+/// Estado de un servicio, con el proceso que lo aloja.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceStatus {
+    pub name: String,
+    pub display: String,
+    pub running: bool,
+    /// 0 si no esta en ejecucion. Varios servicios comparten `svchost`, asi que
+    /// la memoria asociada a un PID puede ser de varios a la vez.
+    pub pid: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceRunState {
     Running,

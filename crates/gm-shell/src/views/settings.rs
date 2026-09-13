@@ -22,6 +22,11 @@ enum Row {
     GuideButton,
     Rumble,
     PowerPlan,
+    StopServices,
+    AutoThrottle,
+    AutoThrottleMax,
+    AutoThrottleMinMb,
+    ProtectHandheld,
     EcoQos,
     TrimWorkingSets,
     GamePriority,
@@ -45,6 +50,11 @@ const ROWS: &[(&str, Row)] = &[
     ("Mando", Row::GuideButton),
     ("Mando", Row::Rumble),
     ("Rendimiento", Row::PowerPlan),
+    ("Rendimiento", Row::StopServices),
+    ("Rendimiento", Row::AutoThrottle),
+    ("Rendimiento", Row::AutoThrottleMax),
+    ("Rendimiento", Row::AutoThrottleMinMb),
+    ("Rendimiento", Row::ProtectHandheld),
     ("Rendimiento", Row::EcoQos),
     ("Rendimiento", Row::TrimWorkingSets),
     ("Rendimiento", Row::GamePriority),
@@ -65,6 +75,8 @@ const UI_SCALE: &[f32] = &[0.8, 0.9, 1.0, 1.1, 1.25, 1.5];
 const DEADZONE: &[f32] = &[0.15, 0.25, 0.35, 0.45];
 const REPEAT_DELAY: &[u64] = &[250, 380, 500, 700];
 const BUDGET_MB: &[u64] = &[64, 128, 256, 512, 1024];
+const THROTTLE_MAX: &[usize] = &[4, 8, 12, 20, 30];
+const THROTTLE_MIN_MB: &[u64] = &[50, 80, 120, 200, 400];
 const PLANS: &[PowerPlan] = &[PowerPlan::Leave, PowerPlan::Balanced, PowerPlan::HighPerformance, PowerPlan::Ultimate];
 const PRIORITIES: &[GamePriority] = &[GamePriority::Normal, GamePriority::AboveNormal, GamePriority::High];
 
@@ -102,6 +114,19 @@ impl App {
                 PowerPlan::HighPerformance => "alto rendimiento".to_string(),
                 PowerPlan::Ultimate => "maximo rendimiento".to_string(),
             },
+            Row::StopServices => {
+                if !self.config.power.stop_services {
+                    "desactivado".to_string()
+                } else if self.config.power.services.is_empty() {
+                    "seleccion recomendada".to_string()
+                } else {
+                    format!("{} elegidos a mano", self.config.power.services.len())
+                }
+            }
+            Row::AutoThrottle => on_off(self.config.power.auto_throttle).to_string(),
+            Row::AutoThrottleMax => format!("{} procesos", self.config.power.auto_throttle_max),
+            Row::AutoThrottleMinMb => format!("desde {} MB", self.config.power.auto_throttle_min_mb),
+            Row::ProtectHandheld => on_off(self.config.power.protect_handheld_helpers).to_string(),
             Row::EcoQos => on_off(self.config.power.eco_qos_background).to_string(),
             Row::TrimWorkingSets => on_off(self.config.power.trim_working_sets).to_string(),
             Row::GamePriority => match self.config.power.game_priority {
@@ -137,6 +162,11 @@ impl App {
             Row::GuideButton => "Capturar el boton Guia",
             Row::Rumble => "Vibracion",
             Row::PowerPlan => "Plan de energia",
+            Row::StopServices => "Detener servicios de Windows",
+            Row::AutoThrottle => "Buscar solo lo que mas pesa",
+            Row::AutoThrottleMax => "Cuantos procesos degradar",
+            Row::AutoThrottleMinMb => "A partir de cuanta RAM",
+            Row::ProtectHandheld => "Proteger utilidades de portatil",
             Row::EcoQos => "EcoQoS en procesos de fondo",
             Row::TrimWorkingSets => "Liberar memoria de procesos de fondo",
             Row::GamePriority => "Prioridad del juego",
@@ -151,7 +181,14 @@ impl App {
 
     fn row_hint(row: Row) -> &'static str {
         match row {
-            Row::BackgroundFps => "A menos Hz, menos molesta el shell al juego (solo vigila el boton Guia)",
+            Row::BackgroundFps => "A menos Hz, menos molesta el shell al juego (solo vigila el boton del mando)",
+            Row::StopServices => {
+                "Solo se ofrecen servicios que se pueden parar sin romper nada. Elige cuales en Recursos"
+            }
+            Row::AutoThrottle => "Mide el equipo y degrada los procesos de fondo mas pesados, sin listas de programas",
+            Row::ProtectHandheld => {
+                "Mando, ventiladores, TDP y superposiciones de Steam Deck y similares: nunca se tocan"
+            }
             Row::EcoQos => "Manda los procesos de fondo a los nucleos eficientes; reversible",
             Row::KillExplorer => "Libera RAM y quita la barra de tareas. Se relanza al salir",
             Row::PowerPlan => "Se restaura el plan original al salir del modo juego",
@@ -187,6 +224,18 @@ impl App {
             }
             Row::Rumble => self.config.input.rumble_feedback = !self.config.input.rumble_feedback,
             Row::PowerPlan => self.config.power.power_plan = cycle(PLANS, self.config.power.power_plan, forward),
+            Row::StopServices => self.config.power.stop_services = !self.config.power.stop_services,
+            Row::AutoThrottle => self.config.power.auto_throttle = !self.config.power.auto_throttle,
+            Row::AutoThrottleMax => {
+                self.config.power.auto_throttle_max = cycle(THROTTLE_MAX, self.config.power.auto_throttle_max, forward)
+            }
+            Row::AutoThrottleMinMb => {
+                self.config.power.auto_throttle_min_mb =
+                    cycle(THROTTLE_MIN_MB, self.config.power.auto_throttle_min_mb, forward)
+            }
+            Row::ProtectHandheld => {
+                self.config.power.protect_handheld_helpers = !self.config.power.protect_handheld_helpers
+            }
             Row::EcoQos => self.config.power.eco_qos_background = !self.config.power.eco_qos_background,
             Row::TrimWorkingSets => self.config.power.trim_working_sets = !self.config.power.trim_working_sets,
             Row::GamePriority => {

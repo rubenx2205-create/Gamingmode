@@ -72,7 +72,8 @@ pub struct Input {
     /// Cada cuanto se comprueba si aparecio un mando nuevo. Sondear ranuras
     /// vacias de XInput es caro, asi que no se hace en cada frame.
     pub rescan_interval_ms: u64,
-    /// Usar el ordinal 100 de xinput1_4.dll para leer el boton Guia (Xbox).
+    /// Usar el ordinal 100 de xinput1_4.dll para leer el boton central del
+    /// mando (el "Guia" de XInput).
     pub capture_guide_button: bool,
     /// Vibracion corta al lanzar un juego.
     pub rumble_feedback: bool,
@@ -121,11 +122,31 @@ pub struct Power {
     /// Aplicar el modo juego automaticamente al arrancar el shell.
     pub engage_on_start: bool,
     pub power_plan: PowerPlan,
-    /// Servicios de Windows a detener mientras dure la sesion. Se restauran al
-    /// salir con el estado (arrancado/parado) que tenian antes.
-    pub stop_services: Vec<String>,
-    /// Procesos de fondo a degradar (sin extension, sin distinguir mayusculas).
-    pub throttle_processes: Vec<String>,
+
+    /// Detener servicios de Windows mientras dure la sesion.
+    pub stop_services: bool,
+    /// Que servicios detener. Vacio = la seleccion recomendada del catalogo
+    /// seguro. Solo se aceptan servicios de ese catalogo: parar cualquier otro
+    /// es la via rapida a quedarse sin sonido o sin red.
+    pub services: Vec<String>,
+
+    /// Buscar automaticamente los procesos de fondo que mas recursos estan
+    /// consumiendo en este equipo y degradarlos, en vez de ir con una lista
+    /// fija de nombres de programas conocidos.
+    pub auto_throttle: bool,
+    /// Cuantos procesos se degradan como mucho.
+    pub auto_throttle_max: usize,
+    /// Un proceso entra en el ranking a partir de esta RAM.
+    pub auto_throttle_min_mb: u64,
+    /// Procesos que el usuario quiere degradar siempre, pesen lo que pesen.
+    pub extra_throttle: Vec<String>,
+
+    /// Procesos que no se tocan nunca, ademas de los protegidos de serie.
+    pub protected_processes: Vec<String>,
+    /// Proteger las utilidades de consolas portatiles (mando, ventiladores,
+    /// TDP, superposiciones). Imprescindible en una Steam Deck con Windows.
+    pub protect_handheld_helpers: bool,
+
     /// Aplicar EcoQoS a los procesos degradados: el planificador los manda a
     /// los nucleos eficientes y baja su frecuencia.
     pub eco_qos_background: bool,
@@ -145,30 +166,14 @@ impl Default for Power {
         Self {
             engage_on_start: false,
             power_plan: PowerPlan::Ultimate,
-            stop_services: [
-                "SysMain",   // Superfetch: precarga inutil durante el juego
-                "WSearch",   // indexador de Windows Search
-                "DiagTrack", // telemetria
-                "Spooler",   // cola de impresion
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-            throttle_processes: [
-                "chrome",
-                "msedge",
-                "firefox",
-                "Discord",
-                "Teams",
-                "OneDrive",
-                "Slack",
-                "Spotify",
-                "EpicGamesLauncher",
-                "steamwebhelper",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+            stop_services: true,
+            services: Vec::new(),
+            auto_throttle: true,
+            auto_throttle_max: 12,
+            auto_throttle_min_mb: 120,
+            extra_throttle: Vec::new(),
+            protected_processes: Vec::new(),
+            protect_handheld_helpers: true,
             eco_qos_background: true,
             trim_working_sets: true,
             game_priority: GamePriority::High,
@@ -271,6 +276,17 @@ mod tests {
         assert_eq!(cfg.general.active_fps, 30);
         assert_eq!(cfg.general.idle_fps, General::default().idle_fps);
         assert!(cfg.power.restore_on_exit);
+        assert!(cfg.power.protect_handheld_helpers, "la proteccion viene activada de serie");
+    }
+
+    #[test]
+    fn las_claves_viejas_no_rompen_la_configuracion() {
+        // Una config de una version anterior traia una lista de nombres de
+        // programas; ahora la busqueda es automatica y esa clave sobra.
+        let cfg: Config =
+            toml::from_str("[power]\nthrottle_processes = [\"navegador\"]\nauto_throttle_max = 5\n").unwrap();
+        assert_eq!(cfg.power.auto_throttle_max, 5);
+        assert!(cfg.power.auto_throttle);
     }
 
     #[test]
@@ -278,7 +294,8 @@ mod tests {
         let cfg = Config::default();
         let text = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
-        assert_eq!(back.power.stop_services, cfg.power.stop_services);
+        assert_eq!(back.power.services, cfg.power.services);
+        assert_eq!(back.power.auto_throttle_max, cfg.power.auto_throttle_max);
         assert_eq!(back.input.poll_hz, cfg.input.poll_hz);
     }
 }

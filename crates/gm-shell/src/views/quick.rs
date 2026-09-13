@@ -12,6 +12,7 @@ pub enum QuickOption {
     ResumeGame,
     EndSession,
     TogglePower,
+    Resources,
     Library,
     Catalog,
     Downloads,
@@ -31,6 +32,7 @@ impl QuickOption {
                     "Activar modo juego (optimizar recursos)".to_string()
                 }
             }
+            QuickOption::Resources => "Ver que esta consumiendo el equipo".to_string(),
             QuickOption::Library => "Biblioteca".to_string(),
             QuickOption::Catalog => "Catalogo de ROMs".to_string(),
             QuickOption::Downloads => "Descargas".to_string(),
@@ -49,6 +51,7 @@ impl App {
         }
         options.extend([
             QuickOption::TogglePower,
+            QuickOption::Resources,
             QuickOption::Library,
             QuickOption::Catalog,
             QuickOption::Downloads,
@@ -79,6 +82,10 @@ impl App {
                 self.pop_view();
             }
             QuickOption::TogglePower => self.toggle_power(),
+            QuickOption::Resources => {
+                self.set_root_view(View::Resources);
+                self.scan_resources();
+            }
             QuickOption::Library => self.set_root_view(View::Library),
             QuickOption::Catalog => self.set_root_view(View::Catalog),
             QuickOption::Downloads => self.set_root_view(View::Downloads),

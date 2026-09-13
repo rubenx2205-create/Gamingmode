@@ -11,12 +11,13 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Power::{PowerGetActiveScheme, PowerSetActiveScheme};
-use windows::Win32::System::ProcessStatus::EmptyWorkingSet;
+use windows::Win32::System::ProcessStatus::{EmptyWorkingSet, GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::Registry::HKEY;
 use windows::Win32::System::Services::{
-    CloseServiceHandle, ControlService, OpenSCManagerW, OpenServiceW, QueryServiceStatus, StartServiceW, SC_HANDLE,
-    SC_MANAGER_CONNECT, SERVICE_CONTROL_STOP, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START, SERVICE_STATUS,
-    SERVICE_STOP, SERVICE_STOPPED,
+    CloseServiceHandle, ControlService, EnumServicesStatusExW, OpenSCManagerW, OpenServiceW, QueryServiceStatus,
+    StartServiceW, ENUM_SERVICE_STATUS_PROCESSW, SC_ENUM_PROCESS_INFO, SC_HANDLE, SC_MANAGER_CONNECT,
+    SC_MANAGER_ENUMERATE_SERVICE, SERVICE_CONTROL_STOP, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START,
+    SERVICE_STATE_ALL, SERVICE_STATUS, SERVICE_STOP, SERVICE_STOPPED, SERVICE_WIN32,
 };
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::{
@@ -26,7 +27,7 @@ use windows::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
 };
 
-use super::{MemoryStatus, ProcInfo, ServiceRunState};
+use super::{MemoryStatus, ProcInfo, ProcessUsage, ServiceRunState, ServiceStatus};
 use crate::guid::SchemeGuid;
 
 fn wide(text: &str) -> Vec<u16> {
@@ -294,4 +295,88 @@ pub fn start_explorer() -> Result<()> {
 
 pub fn current_pid() -> u32 {
     std::process::id()
+}
+
+/// Enumera los procesos con su consumo de memoria. Es la base de la busqueda
+/// automatica: en vez de una lista de nombres de programas conocidos, se mira
+/// que esta pesando de verdad en este equipo ahora mismo.
+pub fn sample_processes() -> Result<Vec<ProcessUsage>> {
+    let mut usage = Vec::with_capacity(256);
+    for process in list_processes()? {
+        // Muchos procesos del sistema no se dejan abrir sin ser SYSTEM; se
+        // quedan con consumo 0 y por tanto nunca entran en el ranking.
+        let (working_set, private_bytes) =
+            with_process(process.pid, PROCESS_QUERY_LIMITED_INFORMATION, |handle| unsafe {
+                let mut counters = PROCESS_MEMORY_COUNTERS {
+                    cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+                    ..Default::default()
+                };
+                GetProcessMemoryInfo(handle, &mut counters, counters.cb)
+                    .map_err(|e| Error::Os { call: "GetProcessMemoryInfo", code: e.code().0 as u32 })?;
+                Ok((counters.WorkingSetSize as u64, counters.PagefileUsage as u64))
+            })
+            .unwrap_or((0, 0));
+
+        usage.push(ProcessUsage { pid: process.pid, name: process.name, working_set, private_bytes });
+    }
+    Ok(usage)
+}
+
+/// Lista todos los servicios Win32 con su estado y el PID que los aloja.
+pub fn list_service_status() -> Result<Vec<ServiceStatus>> {
+    unsafe {
+        let manager = OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ENUMERATE_SERVICE)
+            .map_err(|e| Error::Os { call: "OpenSCManagerW", code: e.code().0 as u32 })?;
+
+        let mut needed = 0u32;
+        let mut returned = 0u32;
+        let mut resume = 0u32;
+        // Primera llamada solo para saber cuanto buffer hace falta.
+        let _ = EnumServicesStatusExW(
+            manager,
+            SC_ENUM_PROCESS_INFO,
+            SERVICE_WIN32,
+            SERVICE_STATE_ALL,
+            None,
+            &mut needed,
+            &mut returned,
+            Some(&mut resume),
+            PCWSTR::null(),
+        );
+        if needed == 0 {
+            let _ = CloseServiceHandle(manager);
+            return Ok(Vec::new());
+        }
+
+        // Se reserva como u64 para garantizar la alineacion que necesita
+        // ENUM_SERVICE_STATUS_PROCESSW: un Vec<u8> no la garantiza.
+        let mut aligned: Vec<u64> = vec![0; (needed as usize).div_ceil(8)];
+        let buffer = std::slice::from_raw_parts_mut(aligned.as_mut_ptr() as *mut u8, aligned.len() * 8);
+
+        let result = EnumServicesStatusExW(
+            manager,
+            SC_ENUM_PROCESS_INFO,
+            SERVICE_WIN32,
+            SERVICE_STATE_ALL,
+            Some(buffer),
+            &mut needed,
+            &mut returned,
+            Some(&mut resume),
+            PCWSTR::null(),
+        );
+        let _ = CloseServiceHandle(manager);
+        result.map_err(|e| Error::Os { call: "EnumServicesStatusExW", code: e.code().0 as u32 })?;
+
+        let entries =
+            std::slice::from_raw_parts(aligned.as_ptr() as *const ENUM_SERVICE_STATUS_PROCESSW, returned as usize);
+        Ok(entries
+            .iter()
+            .map(|entry| ServiceStatus {
+                name: entry.lpServiceName.to_string().unwrap_or_default(),
+                display: entry.lpDisplayName.to_string().unwrap_or_default(),
+                running: entry.ServiceStatusProcess.dwCurrentState == SERVICE_RUNNING,
+                pid: entry.ServiceStatusProcess.dwProcessId,
+            })
+            .collect())
+    }
 }

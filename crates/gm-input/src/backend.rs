@@ -56,7 +56,7 @@ mod windows_xinput {
 
     const ERROR_SUCCESS: u32 = 0;
     /// Ordinal no documentado de `XInputGetStateEx`, la unica via para leer el
-    /// boton Guia. Es lo que usan Steam y el resto de shells de salon.
+    /// boton central del mando; es la via que usan todos los shells de salon.
     const ORDINAL_GET_STATE_EX: usize = 100;
 
     #[repr(C)]

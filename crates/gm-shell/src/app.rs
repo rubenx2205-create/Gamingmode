@@ -18,7 +18,7 @@ use gm_core::config::Config;
 use gm_core::launcher::{self, Session};
 use gm_core::library::{Game, Launch, Library, Sort};
 use gm_input::{InputHub, NavAction, PollMode};
-use gm_power::{MemoryStatus, Optimizer, Report};
+use gm_power::{MemoryStatus, Optimizer, Report, SystemScan};
 
 use crate::browser::{Browser, Filter};
 
@@ -29,6 +29,8 @@ pub enum View {
     Catalog,
     CatalogEntries,
     Downloads,
+    /// Que esta consumiendo el equipo y que se va a hacer al respecto.
+    Resources,
     Settings,
     /// Panel rapido del boton Guia; funciona tambien con un juego en marcha.
     Quick,
@@ -110,6 +112,14 @@ pub struct App {
     pub settings_focus: usize,
     pub downloads_focus: usize,
 
+    // Recursos del sistema
+    pub resources: Option<SystemScan>,
+    pub resource_focus: usize,
+    resource_busy: Arc<AtomicBool>,
+    resource_tx: Sender<SystemScan>,
+    resource_rx: Receiver<SystemScan>,
+    last_scan: Option<Instant>,
+
     pub toasts: Vec<Toast>,
     pub memory: MemoryStatus,
     last_memory_check: Instant,
@@ -136,6 +146,7 @@ impl App {
         let input = InputHub::new(config.input.clone());
         let optimizer = Optimizer::new(config.power.clone());
         let (power_tx, power_rx) = mpsc::channel();
+        let (resource_tx, resource_rx) = mpsc::channel();
 
         let mut app = Self {
             config,
@@ -170,6 +181,12 @@ impl App {
             quick_focus: 0,
             settings_focus: 0,
             downloads_focus: 0,
+            resources: None,
+            resource_focus: 0,
+            resource_busy: Arc::new(AtomicBool::new(false)),
+            resource_tx,
+            resource_rx,
+            last_scan: None,
             toasts: Vec::new(),
             memory: MemoryStatus::default(),
             last_memory_check: Instant::now() - Duration::from_secs(60),
@@ -277,6 +294,9 @@ impl App {
         }
         match launcher::launch(&game, &self.config) {
             Ok(session) => {
+                if let Ok(mut optimizer) = self.optimizer.lock() {
+                    optimizer.set_game_pid(session.pid);
+                }
                 self.input.rumble(0.4, Duration::from_millis(180), Instant::now());
                 self.toast(ToastKind::Good, format!("Lanzando {}", game.title));
                 self.session = Some(session);
@@ -356,6 +376,87 @@ impl App {
             busy.store(false, Ordering::Relaxed);
             let _ = tx.send(report);
         });
+    }
+
+    /// Mide el equipo en segundo plano: enumerar procesos y abrir un handle
+    /// por cada uno tarda lo suyo y no puede bloquear el dibujado.
+    pub fn scan_resources(&mut self) {
+        if self.resource_busy.load(Ordering::Relaxed) {
+            return;
+        }
+        let config = self.config.power.clone();
+        let enabled = self.enabled_services();
+        let game_pid = self.session.as_ref().and_then(|session| session.pid);
+        let busy = Arc::clone(&self.resource_busy);
+        let tx = self.resource_tx.clone();
+        busy.store(true, Ordering::Relaxed);
+        self.last_scan = Some(Instant::now());
+        std::thread::spawn(move || {
+            let scan = gm_power::scan(&config, &enabled, game_pid);
+            busy.store(false, Ordering::Relaxed);
+            let _ = tx.send(scan);
+        });
+    }
+
+    pub fn scanning(&self) -> bool {
+        self.resource_busy.load(Ordering::Relaxed)
+    }
+
+    /// Servicios marcados para detener. La lista vacia significa "la seleccion
+    /// recomendada", asi que hay que resolverla antes de ensenarla o tocarla.
+    pub fn enabled_services(&self) -> Vec<String> {
+        if !self.config.power.stop_services {
+            return Vec::new();
+        }
+        if self.config.power.services.is_empty() {
+            gm_power::services::defaults()
+        } else {
+            gm_power::services::sanitize(&self.config.power.services).0
+        }
+    }
+
+    /// Marca o desmarca un servicio del catalogo.
+    pub fn toggle_service(&mut self, name: &str) {
+        let mut enabled = self.enabled_services();
+        match enabled.iter().position(|other| other.eq_ignore_ascii_case(name)) {
+            Some(index) => {
+                enabled.remove(index);
+            }
+            None => {
+                if !gm_power::services::is_allowed(name) {
+                    self.toast(ToastKind::Bad, format!("{name} no esta en el catalogo seguro"));
+                    return;
+                }
+                enabled.push(name.to_string());
+            }
+        }
+        // Al tocar algo se deja de heredar la seleccion recomendada; si se
+        // vacia del todo se apaga la parada de servicios, que es lo que el
+        // usuario esta pidiendo.
+        self.config.power.stop_services = !enabled.is_empty();
+        self.config.power.services = enabled;
+        self.save_config();
+        self.refresh_scan_marks();
+    }
+
+    /// Vuelve a la seleccion recomendada del catalogo.
+    pub fn reset_services(&mut self) {
+        self.config.power.stop_services = true;
+        self.config.power.services.clear();
+        self.save_config();
+        self.refresh_scan_marks();
+        self.toast(ToastKind::Info, "Servicios: seleccion recomendada");
+    }
+
+    /// Reetiqueta la ultima medicion sin volver a medir: cambiar una casilla no
+    /// justifica recorrer otra vez todos los procesos del equipo.
+    fn refresh_scan_marks(&mut self) {
+        let enabled = self.enabled_services();
+        if let Some(scan) = self.resources.as_mut() {
+            for report in &mut scan.services {
+                report.enabled = enabled.iter().any(|name| name.eq_ignore_ascii_case(report.entry.name));
+            }
+        }
     }
 
     pub fn open_browser(&mut self, purpose: BrowserPurpose) {
@@ -498,6 +599,9 @@ impl App {
         };
         if finished {
             if let Some(session) = self.session.take() {
+                if let Ok(mut optimizer) = self.optimizer.lock() {
+                    optimizer.set_game_pid(None);
+                }
                 let seconds = session.elapsed_secs();
                 self.library.record_session(&session.game_id, seconds);
                 self.save_library();
@@ -539,6 +643,18 @@ impl App {
             let prefix = if self.power_engaged { "Modo juego activo" } else { "Sistema restaurado" };
             self.toast(kind, format!("{prefix}: {summary}"));
             self.last_report = Some(report);
+        }
+
+        // Medicion de recursos.
+        while let Ok(scan) = self.resource_rx.try_recv() {
+            self.resource_focus = self.resource_focus.min(scan.services.len().saturating_sub(1));
+            self.resources = Some(scan);
+        }
+        if self.view == View::Resources && !self.scanning() {
+            let stale = self.last_scan.is_none_or(|last| last.elapsed() > Duration::from_secs(10));
+            if stale {
+                self.scan_resources();
+            }
         }
 
         // Descargas.
@@ -633,6 +749,7 @@ impl App {
             View::Catalog => self.handle_catalog_action(action),
             View::CatalogEntries => self.handle_entries_action(action),
             View::Downloads => self.handle_downloads_action(action),
+            View::Resources => self.handle_resources_action(action),
             View::Settings => self.handle_settings_action(action),
             View::Quick => self.handle_quick_action(action, ctx),
             View::Browser => self.handle_browser_action(action),
@@ -756,6 +873,29 @@ impl App {
                 }
             }
             NavAction::Favorite => self.downloader.clear_finished(),
+            NavAction::Back => self.pop_view(),
+            _ => {}
+        }
+    }
+
+    fn handle_resources_action(&mut self, action: NavAction) {
+        let len = self.resources.as_ref().map(|scan| scan.services.len()).unwrap_or(0);
+        match action {
+            NavAction::Up | NavAction::Down | NavAction::PageUp | NavAction::PageDown => {
+                self.resource_focus = crate::nav::move_list(self.resource_focus, len, action);
+            }
+            NavAction::Accept => {
+                let name = self
+                    .resources
+                    .as_ref()
+                    .and_then(|scan| scan.services.get(self.resource_focus))
+                    .map(|report| report.entry.name);
+                if let Some(name) = name {
+                    self.toggle_service(name);
+                }
+            }
+            NavAction::Context => self.scan_resources(),
+            NavAction::Favorite => self.reset_services(),
             NavAction::Back => self.pop_view(),
             _ => {}
         }

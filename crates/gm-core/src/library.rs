@@ -1,5 +1,8 @@
-//! Biblioteca de juegos del usuario: ejecutables anadidos a mano, ROMs y
-//! accesos a lanzadores externos (Steam, Epic, ...).
+//! Biblioteca de juegos del usuario.
+//!
+//! El modo juego es un frontend neutral: no habla con ninguna tienda ni sabe de
+//! cuentas. Solo conoce tres formas de arrancar algo: un ejecutable, una ROM
+//! con su emulador, o un atajo del sistema.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,8 +33,10 @@ pub enum Launch {
         #[serde(default)]
         emulator_id: Option<String>,
     },
-    /// Un URI de lanzador: `steam://rungameid/440`, `com.epicgames.launcher://...`
-    Uri { uri: String },
+    /// Un atajo del sistema: un `.lnk` o un URI de protocolo, sea cual sea.
+    /// Lo resuelve Windows, aqui no se conoce ni se privilegia ningun programa
+    /// concreto.
+    Shortcut { target: String },
 }
 
 impl Launch {
@@ -39,7 +44,7 @@ impl Launch {
         match self {
             Launch::Executable { path, .. } => path.display().to_string(),
             Launch::Rom { path, .. } => path.display().to_string(),
-            Launch::Uri { uri } => uri.clone(),
+            Launch::Shortcut { target } => target.clone(),
         }
     }
 
@@ -47,7 +52,8 @@ impl Launch {
     pub fn is_available(&self) -> bool {
         match self {
             Launch::Executable { path, .. } | Launch::Rom { path, .. } => path.exists(),
-            Launch::Uri { .. } => true,
+            // Lo resuelve el sistema al abrirlo; desde aqui no se puede saber.
+            Launch::Shortcut { .. } => true,
         }
     }
 }
@@ -57,7 +63,7 @@ pub struct Game {
     pub id: String,
     pub title: String,
     pub launch: Launch,
-    /// Etiqueta libre para agrupar: "Steam", "SNES", "PC"...
+    /// Etiqueta libre para agrupar: "PC", "SNES", "Emuladores"...
     #[serde(default)]
     pub collection: String,
     #[serde(default)]
