@@ -122,6 +122,9 @@ pub struct App {
 
     pub toasts: Vec<Toast>,
     pub memory: MemoryStatus,
+    /// Cambio de pantalla completa pendiente de enviarle a la ventana.
+    pending_fullscreen: Option<bool>,
+    first_frame: bool,
     last_memory_check: Instant,
     pub last_activity: Instant,
     download_meta: HashMap<u64, (String, String)>,
@@ -189,6 +192,8 @@ impl App {
             last_scan: None,
             toasts: Vec::new(),
             memory: MemoryStatus::default(),
+            pending_fullscreen: None,
+            first_frame: true,
             last_memory_check: Instant::now() - Duration::from_secs(60),
             last_activity: Instant::now(),
             download_meta: HashMap::new(),
@@ -245,6 +250,33 @@ impl App {
             Sort::Added => Sort::LastPlayed,
         };
         self.mark_library_dirty();
+    }
+
+    /// Pone o quita la pantalla completa y lo deja guardado.
+    ///
+    /// El cambio se aplica en el acto: antes habia que reiniciar el shell para
+    /// que la casilla de los ajustes sirviese de algo.
+    pub fn set_fullscreen(&mut self, fullscreen: bool) {
+        self.config.general.fullscreen = fullscreen;
+        self.pending_fullscreen = Some(fullscreen);
+        self.save_config();
+    }
+
+    pub fn toggle_fullscreen(&mut self) {
+        self.set_fullscreen(!self.config.general.fullscreen);
+    }
+
+    /// Reafirma el estado de ventana guardado en la configuracion.
+    fn request_window_mode(&mut self) {
+        self.pending_fullscreen = Some(self.config.general.fullscreen);
+    }
+
+    fn apply_window_mode(&mut self, ctx: &egui::Context) {
+        let Some(fullscreen) = self.pending_fullscreen.take() else { return };
+        // Sin bordes en pantalla completa; con ellos en ventana, para poder
+        // moverla y cerrarla como cualquier otra.
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!fullscreen));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fullscreen));
     }
 
     pub fn power_busy(&self) -> bool {
@@ -608,6 +640,8 @@ impl App {
                 self.mark_library_dirty();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                // Salir de minimizado puede dejar la ventana en modo normal.
+                self.request_window_mode();
                 self.toast(ToastKind::Info, format!("{}: {}", session.title, gm_core::util::format_playtime(seconds)));
                 self.last_activity = now;
             }
@@ -714,6 +748,12 @@ impl App {
             );
         } else {
             actions.extend(keyboard);
+        }
+
+        // F11 no es una accion de navegacion: es un interruptor de ventana.
+        if ctx.input(|input| input.key_pressed(egui::Key::F11)) {
+            self.toggle_fullscreen();
+            self.last_activity = now;
         }
 
         if !actions.is_empty() || frame.activity {
@@ -980,6 +1020,15 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.first_frame {
+            self.first_frame = false;
+            // La peticion de pantalla completa hecha al crear la ventana la
+            // ignoran algunos controladores y gestores de ventanas; se repite
+            // una vez con la ventana ya viva, que es cuando siempre funciona.
+            self.request_window_mode();
+        }
+        self.apply_window_mode(ctx);
+
         self.pump(ctx);
         self.refresh_library_view();
 

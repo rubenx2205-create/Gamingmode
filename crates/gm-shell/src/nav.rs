@@ -30,6 +30,8 @@ pub fn keyboard_actions(ctx: &egui::Context) -> Vec<NavAction> {
         (Key::PageUp, NavAction::PageUp),
         (Key::PageDown, NavAction::PageDown),
         (Key::F12, NavAction::Guide),
+        // F11 (pantalla completa) lo trata el bucle principal: no es una
+        // accion de navegacion.
     ];
 
     ctx.input(|input| {

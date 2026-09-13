@@ -193,6 +193,7 @@ impl App {
             Row::KillExplorer => "Libera RAM y quita la barra de tareas. Se relanza al salir",
             Row::PowerPlan => "Se restaura el plan original al salir del modo juego",
             Row::CatalogDir => "Carpeta con los .jsonl del repositorio Roms",
+            Row::Fullscreen => "Se aplica al momento; tambien con F11",
             _ => "",
         }
     }
@@ -201,7 +202,10 @@ impl App {
     pub fn adjust_setting(&mut self, index: usize, forward: bool) {
         let Some((_, row)) = ROWS.get(index).copied() else { return };
         match row {
-            Row::Fullscreen => self.config.general.fullscreen = !self.config.general.fullscreen,
+            Row::Fullscreen => {
+                self.toggle_fullscreen();
+                return;
+            }
             Row::ActiveFps => {
                 self.config.general.active_fps = cycle(ACTIVE_FPS, self.config.general.active_fps, forward)
             }
