@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <clipPath id="squircle"><rect x="0" y="0" width="1024" height="1024" rx="228" ry="228"/></clipPath>
+  </defs>
+  <g clip-path="url(#squircle)"><rect width="1024" height="1024" fill="#232226"/></g>
+  <g transform="translate(153.60000000000002,261.12) scale(3.5839999999999996)">
+    <g fill="none" stroke="#EFE7D8" stroke-width="8.370535714285715" stroke-linecap="round" stroke-linejoin="round">
+      
+      <rect x="15" y="65" width="170" height="70" rx="35" ry="35"/>
+      <line x1="65" y1="86" x2="65" y2="114"/>
+      <line x1="51" y1="100" x2="79" y2="100"/>
+      <circle cx="145" cy="86" r="40.0" fill="#EFE7D8" stroke="none"/>
+      <circle cx="163" cy="100" r="40.0" fill="#EFE7D8" stroke="none"/>
+      <circle cx="145" cy="114" r="40.0" fill="#EFE7D8" stroke="none"/>
+      <circle cx="127" cy="100" r="40.0" fill="#EFE7D8" stroke="none"/>
+    </g>
+  </g>
+</svg>

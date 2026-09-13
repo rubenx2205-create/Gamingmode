@@ -95,7 +95,12 @@ Primera iteracion funcional:
   de memoria y descargas reanudables.
 - **Caratulas reales via SteamGridDB** (opcional): se buscan solas en segundo
   plano para los juegos que aparecen en pantalla, sin ventanas ni dialogos que
-  interrumpan la pantalla completa.
+  interrumpan la pantalla completa. La clave se da de alta desde dentro de la
+  app, con una pantalla que explica de donde sacarla, deja pegarla del
+  portapapeles y probarla contra el servicio antes de guardarla.
+- **Icono propio**, incrustado tanto en el `.exe` (Explorador, Alt+Tab) como
+  en la ventana en ejecucion (`assets/icon_source.svg` es el original; el resto
+  de tamanos y el `.ico` se generan de ahi).
 
 ## Arquitectura
 
@@ -224,15 +229,11 @@ stop_services = true
 services = []                 # vacio = seleccion recomendada del catalogo
 ```
 
-Y el tema y las caratulas:
+El tema tambien se puede fijar a mano (aunque cambia solo desde los ajustes):
 
 ```toml
 [general]
-theme = "dark"                 # "dark" o "light"; tambien desde los ajustes
-
-[covers]
-steamgrid_api_key = "..."      # gratis en steamgriddb.com/profile/preferences/api
-auto_fetch = true              # sin clave, no hace nada
+theme = "dark"                 # "dark" o "light"
 ```
 
 ## Catalogo de ROMs
@@ -245,15 +246,32 @@ y lo descargado se anade solo a la biblioteca.
 
 [SteamGridDB](https://www.steamgriddb.com) es una base de datos comunitaria de
 arte de caratulas, no una tienda: no hace falta cuenta para jugar, no lanza
-nada y no sabe de compras. Con una clave gratuita puesta en `config.toml` (ver
-arriba), el shell busca sola la caratula de cada juego que aparece en
-pantalla, en un hilo aparte, y la sustituye por la generada en cuanto llega.
-Sin clave, esta pieza simplemente no hace nada: no hay ninguna otra
-dependencia de red en el shell aparte de las descargas del catalogo.
+nada y no sabe de compras. Con una clave gratuita, el shell busca sola la
+caratula de cada juego que aparece en pantalla, en un hilo aparte, y la
+sustituye por la generada en cuanto llega. Sin clave, esta pieza simplemente no
+hace nada: no hay ninguna otra dependencia de red en el shell aparte de las
+descargas del catalogo.
+
+La clave se da de alta **desde dentro de la propia app**, sin tocar ningun
+fichero a mano: *Ajustes → Caratulas automaticas (SteamGridDB)* abre una
+pantalla que explica de donde sacar la clave gratuita (con el enlace directo),
+deja pegarla del portapapeles con un boton (**X**, para no tener que
+escribirla letra a letra con el mando) y probarla contra el servicio de
+verdad antes de guardar nada (**Y**) — asi te enteras al momento si la copiaste
+mal, en vez de descubrirlo cuando falla en silencio la primera busqueda real.
+Tambien se puede seguir poniendo a mano en `config.toml`:
+
+```toml
+[covers]
+steamgrid_api_key = "..."      # gratis en steamgriddb.com/profile/preferences/api
+auto_fetch = true              # sin clave, no hace nada
+```
 
 ## Pendiente
 
 - Detectar el modelo de portatil para ajustar los valores por defecto.
-- Sonidos de interfaz y teclado en pantalla para buscar con el mando.
+- Sonidos de interfaz y teclado en pantalla para buscar con el mando (el campo
+  de la clave de SteamGridDB ya admite pegar del portapapeles con el mando,
+  pero escribirla letra a letra sigue necesitando teclado).
 - Bordes redondeados en las caratulas reales (ahora mismo se recortan en
   rectangulo; egui no da rondeado nativo al recortar una imagen).

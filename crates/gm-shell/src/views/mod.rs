@@ -2,6 +2,7 @@
 //! superior, la leyenda de botones de abajo y los avisos.
 
 mod catalog;
+mod cover_setup;
 mod detail;
 mod downloads;
 mod explorer;
@@ -32,6 +33,7 @@ impl App {
                 View::Downloads => self.downloads_ui(ui),
                 View::Resources => self.resources_ui(ui),
                 View::Settings => self.settings_ui(ui),
+                View::CoverSetup => self.cover_setup_ui(ui),
                 View::Quick => self.quick_ui(ui),
                 View::Browser => self.explorer_ui(ui),
             });
@@ -154,6 +156,13 @@ impl App {
                 (NavAction::Left, "Valor anterior"),
                 (NavAction::Back, "Guardar y volver"),
             ],
+            View::CoverSetup => &[
+                (NavAction::Accept, "Editar"),
+                (NavAction::Context, "Pegar"),
+                (NavAction::Favorite, "Probar clave"),
+                (NavAction::TabPrev, "Borrar"),
+                (NavAction::Back, "Guardar y volver"),
+            ],
             View::Quick => &[(NavAction::Accept, "Elegir"), (NavAction::Back, "Cerrar")],
             View::Browser => {
                 &[(NavAction::Accept, "Abrir"), (NavAction::Back, "Subir"), (NavAction::Favorite, "Usar esta carpeta")]
@@ -213,6 +222,7 @@ impl App {
             View::Downloads => "Descargas".to_string(),
             View::Resources => "Recursos del sistema".to_string(),
             View::Settings => "Ajustes".to_string(),
+            View::CoverSetup => "Caratulas · SteamGridDB".to_string(),
             View::Quick => "Panel rapido".to_string(),
             View::Browser => "Explorador".to_string(),
         }

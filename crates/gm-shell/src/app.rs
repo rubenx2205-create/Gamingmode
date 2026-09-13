@@ -33,9 +33,20 @@ pub enum View {
     /// Que esta consumiendo el equipo y que se va a hacer al respecto.
     Resources,
     Settings,
+    /// Alta de la clave de SteamGridDB, con explicacion, pegado y prueba.
+    CoverSetup,
     /// Panel rapido del boton Guia; funciona tambien con un juego en marcha.
     Quick,
     Browser,
+}
+
+/// Como va la prueba de la clave de SteamGridDB que se esta editando.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyTestState {
+    Idle,
+    Testing,
+    Valid,
+    Invalid(String),
 }
 
 /// Para que se abrio el explorador de ficheros.
@@ -145,6 +156,16 @@ pub struct App {
     cover_attempted: HashSet<String>,
     cover_tx: Sender<(String, PathBuf)>,
     cover_rx: Receiver<(String, PathBuf)>,
+
+    // Alta de la clave de SteamGridDB (pantalla dedicada, ver views/cover_setup.rs)
+    /// Lo que hay escrito en el campo ahora mismo; no es la clave guardada
+    /// hasta que se pulsa Guardar (o se sale de la pantalla).
+    pub cover_key_draft: String,
+    pub cover_key_editing: bool,
+    pub cover_key_test: KeyTestState,
+    cover_test_busy: Arc<AtomicBool>,
+    cover_test_tx: Sender<Result<(), String>>,
+    cover_test_rx: Receiver<Result<(), String>>,
 }
 
 impl App {
@@ -167,6 +188,7 @@ impl App {
         let (power_tx, power_rx) = mpsc::channel();
         let (resource_tx, resource_rx) = mpsc::channel();
         let (cover_tx, cover_rx) = mpsc::channel();
+        let (cover_test_tx, cover_test_rx) = mpsc::channel();
 
         let mut app = Self {
             config,
@@ -222,6 +244,12 @@ impl App {
             cover_attempted: HashSet::new(),
             cover_tx,
             cover_rx,
+            cover_key_draft: String::new(),
+            cover_key_editing: false,
+            cover_key_test: KeyTestState::Idle,
+            cover_test_busy: Arc::new(AtomicBool::new(false)),
+            cover_test_tx,
+            cover_test_rx,
         };
 
         // Si la sesion anterior se fue sin restaurar, se deshace ahora.
@@ -677,6 +705,77 @@ impl App {
         });
     }
 
+    /// Abre la pantalla de alta de la clave de SteamGridDB, con lo que haya
+    /// guardado ya como punto de partida.
+    pub fn open_cover_setup(&mut self) {
+        self.cover_key_draft = self.config.covers.steamgrid_api_key.clone().unwrap_or_default();
+        self.cover_key_editing = false;
+        self.cover_key_test = KeyTestState::Idle;
+        self.push_view(View::CoverSetup);
+    }
+
+    /// Pega el contenido del portapapeles en el campo. Pensado para poder
+    /// hacerlo con el mando (copiar la clave en el navegador del telefono o
+    /// del propio PC y traerla aqui sin escribir un solo caracter).
+    pub fn cover_key_paste(&mut self) {
+        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+            Ok(text) => {
+                self.cover_key_draft = text.trim().to_string();
+                self.cover_key_test = KeyTestState::Idle;
+                self.toast(ToastKind::Info, "Pegado del portapapeles");
+            }
+            Err(e) => self.toast(ToastKind::Bad, format!("No se pudo leer el portapapeles: {e}")),
+        }
+    }
+
+    pub fn cover_key_clear(&mut self) {
+        self.cover_key_draft.clear();
+        self.cover_key_test = KeyTestState::Idle;
+    }
+
+    pub fn cover_key_busy(&self) -> bool {
+        self.cover_test_busy.load(Ordering::Relaxed)
+    }
+
+    /// Prueba la clave escrita contra SteamGridDB de verdad, en un hilo aparte,
+    /// sin guardar nada todavia. Es la diferencia entre "guardar y enterarte
+    /// del error la primera vez que falle en silencio" y saberlo al momento.
+    pub fn test_cover_key(&mut self) {
+        let key = self.cover_key_draft.trim().to_string();
+        if key.is_empty() {
+            self.cover_key_test = KeyTestState::Invalid("no hay nada escrito todavia".to_string());
+            return;
+        }
+        if self.cover_key_busy() {
+            return;
+        }
+        self.cover_key_test = KeyTestState::Testing;
+        let busy = Arc::clone(&self.cover_test_busy);
+        let tx = self.cover_test_tx.clone();
+        busy.store(true, Ordering::Relaxed);
+        std::thread::spawn(move || {
+            let result = gm_catalog::steamgrid::validate_key(&key).map_err(|e| e.to_string());
+            busy.store(false, Ordering::Relaxed);
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Guarda el borrador como clave definitiva (o lo borra si esta vacio) y
+    /// vuelve a los ajustes.
+    pub fn save_cover_key(&mut self) {
+        let key = self.cover_key_draft.trim().to_string();
+        let had_key = self.config.covers.steamgrid_api_key.is_some();
+        self.config.covers.steamgrid_api_key = if key.is_empty() { None } else { Some(key) };
+        self.save_config();
+        match (had_key, &self.config.covers.steamgrid_api_key) {
+            (_, Some(_)) => self.toast(ToastKind::Good, "Clave de SteamGridDB guardada"),
+            (true, None) => self.toast(ToastKind::Info, "Clave de SteamGridDB borrada"),
+            (false, None) => {}
+        }
+        self.cover_key_editing = false;
+        self.pop_view();
+    }
+
     // ------------------------------------------------------------------
     // Trabajo de fondo
     // ------------------------------------------------------------------
@@ -699,6 +798,14 @@ impl App {
             // perderse si el shell se cierra antes del siguiente cambio en la
             // biblioteca.
             self.save_library();
+        }
+
+        // Resultado de probar la clave de SteamGridDB.
+        if let Ok(result) = self.cover_test_rx.try_recv() {
+            self.cover_key_test = match result {
+                Ok(()) => KeyTestState::Valid,
+                Err(e) => KeyTestState::Invalid(e),
+            };
         }
 
         // Juego terminado?
@@ -878,6 +985,7 @@ impl App {
             View::Downloads => self.handle_downloads_action(action),
             View::Resources => self.handle_resources_action(action),
             View::Settings => self.handle_settings_action(action),
+            View::CoverSetup => self.handle_cover_setup_action(action),
             View::Quick => self.handle_quick_action(action, ctx),
             View::Browser => self.handle_browser_action(action),
         }
@@ -1070,6 +1178,23 @@ impl App {
             NavAction::Back => {
                 self.save_config();
                 self.pop_view();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_cover_setup_action(&mut self, action: NavAction) {
+        match action {
+            NavAction::Accept => self.cover_key_editing = !self.cover_key_editing,
+            NavAction::Context => self.cover_key_paste(),
+            NavAction::Favorite => self.test_cover_key(),
+            NavAction::TabPrev => self.cover_key_clear(),
+            NavAction::Back => {
+                if self.cover_key_editing {
+                    self.cover_key_editing = false;
+                } else {
+                    self.save_cover_key();
+                }
             }
             _ => {}
         }

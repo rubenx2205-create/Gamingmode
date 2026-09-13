@@ -24,9 +24,18 @@ env_logger = { version = "0.11", default-features = false, features = ["humantim
 # Decodifica las caratulas descargadas (SteamGridDB) para subirlas como
 # textura. Sin soporte de red propio: solo lee bytes ya guardados en disco.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Leer el portapapeles para el boton "Pegar" de la clave de SteamGridDB. Ya
+# viene con eframe de todas formas (lo usa para copiar/pegar texto); se declara
+# aparte solo para poder llamarlo a mano desde un boton del mando.
+arboard = { version = "3", default-features = false }
 
 # Fuera de Windows winit necesita un backend de ventanas para compilar. No es
 # una plataforma soportada del producto, pero permite ejecutar en Linux las
 # pruebas de navegacion y de tema durante el desarrollo.
 [target.'cfg(not(windows))'.dependencies]
 eframe = { version = "0.29", default-features = false, features = ["wgpu", "default_fonts", "x11"] }
+
+# Incrusta el icono (assets/icon.ico) en el .exe: rc.exe en MSVC, windres en
+# GNU. No hace nada fuera de Windows (ver build.rs).
+[build-dependencies]
+winresource = "0.1"

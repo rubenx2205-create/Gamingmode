@@ -156,9 +156,10 @@ impl App {
             Row::DownloadDir => self.config.download_dir().display().to_string(),
             Row::CatalogBudget => format!("{} MB", self.config.catalog.max_index_memory_mb),
             Row::CoverAutoFetch => match &self.config.covers.steamgrid_api_key {
-                None => "sin clave configurada".to_string(),
-                Some(key) if key.trim().is_empty() => "sin clave configurada".to_string(),
-                Some(_) => on_off(self.config.covers.auto_fetch).to_string(),
+                None => "sin configurar →".to_string(),
+                Some(key) if key.trim().is_empty() => "sin configurar →".to_string(),
+                Some(_) if self.config.covers.auto_fetch => "activado →".to_string(),
+                Some(_) => "clave guardada, desactivado →".to_string(),
             },
         }
     }
@@ -191,7 +192,7 @@ impl App {
             Row::CatalogDir => "Carpeta del catalogo",
             Row::DownloadDir => "Carpeta de descargas",
             Row::CatalogBudget => "Memoria maxima del catalogo",
-            Row::CoverAutoFetch => "Descargar caratulas automaticamente",
+            Row::CoverAutoFetch => "Caratulas automaticas (SteamGridDB)",
         }
     }
 
@@ -211,9 +212,7 @@ impl App {
             Row::CatalogDir => "Carpeta con los .jsonl del repositorio Roms",
             Row::Fullscreen => "Se aplica al momento; tambien con F11",
             Row::ThemeMode => "Blanco y negro nada mas: sin acento de color de ningun lanzador",
-            Row::CoverAutoFetch => {
-                "Via SteamGridDB. Pon tu clave gratuita en covers.steamgrid_api_key dentro de config.toml"
-            }
+            Row::CoverAutoFetch => "Pulsa para configurar la clave gratuita, pegarla y probarla",
             _ => "",
         }
     }
@@ -284,7 +283,10 @@ impl App {
                 self.open_browser(BrowserPurpose::PickDownloadDir);
                 return;
             }
-            Row::CoverAutoFetch => self.config.covers.auto_fetch = !self.config.covers.auto_fetch,
+            Row::CoverAutoFetch => {
+                self.open_cover_setup();
+                return;
+            }
         }
         self.save_config();
         self.apply_live_settings();

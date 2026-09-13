@@ -25,6 +25,7 @@ fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Modo Juego")
         .with_app_id("gamingmode")
+        .with_icon(load_icon())
         .with_min_inner_size([960.0, 540.0])
         .with_inner_size([1280.0, 720.0])
         // La ventana nace oculta: `App` la ensena en cuanto ha aplicado el
@@ -50,6 +51,16 @@ fn main() -> eframe::Result {
     };
 
     eframe::run_native("Modo Juego", options, Box::new(|cc| Ok(Box::new(app::App::new(&cc.egui_ctx)))))
+}
+
+/// Icono de la ventana (barra de titulo, barra de tareas mientras corre).
+/// El del propio fichero .exe -el que se ve en el Explorador sin ejecutarlo-
+/// se incrusta aparte, en tiempo de compilacion (ver `build.rs`).
+fn load_icon() -> egui::IconData {
+    let bytes = include_bytes!("../../../assets/icon_256.png");
+    let image = image::load_from_memory(bytes).expect("el icono incrustado deberia ser un PNG valido").to_rgba8();
+    let (width, height) = image.dimensions();
+    egui::IconData { rgba: image.into_raw(), width, height }
 }
 
 /// Log a fichero: en release no hay consola donde mirar.

@@ -33,6 +33,29 @@ pub fn fetch_cover(_api_key: &str, _title: &str, _game_id: &str, _dest_dir: &Pat
     Err(Error::Unsupported("las caratulas de SteamGridDB solo se descargan en Windows"))
 }
 
+/// Comprueba que una clave funciona de verdad, sin descargar nada: solo
+/// pregunta por un titulo archiconocido y mira si SteamGridDB acepta la
+/// clave. Es lo que hay detras del boton "Probar clave" de los ajustes: la
+/// alternativa -guardarla a ciegas y enterarte de que estaba mal cuando falla
+/// en silencio la primera busqueda de verdad- no es nada entendible.
+#[cfg(windows)]
+pub fn validate_key(api_key: &str) -> Result<()> {
+    let agent = build_agent()?;
+    let url = format!("{API_BASE}/search/autocomplete/half-life");
+    match agent.get(&url).set("Authorization", &format!("Bearer {}", api_key.trim())).call() {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+            Err(Error::Remote("SteamGridDB ha rechazado la clave (401/403): copiala entera, sin espacios".into()))
+        }
+        Err(e) => Err(Error::Remote(format!("no se pudo contactar con SteamGridDB: {e}"))),
+    }
+}
+
+#[cfg(not(windows))]
+pub fn validate_key(_api_key: &str) -> Result<()> {
+    Err(Error::Unsupported("la validacion de la clave solo funciona en Windows"))
+}
+
 #[cfg(windows)]
 fn build_agent() -> Result<ureq::Agent> {
     crate::download::build_agent().ok_or_else(|| Error::Remote("no se pudo iniciar el transporte TLS".into()))
@@ -44,7 +67,7 @@ fn search_game(agent: &ureq::Agent, api_key: &str, title: &str) -> Result<u64> {
     let url = format!("{API_BASE}/search/autocomplete/{}", percent_encode(title));
     let body: serde_json::Value = agent
         .get(&url)
-        .set("Authorization", &format!("Bearer {api_key}"))
+        .set("Authorization", &format!("Bearer {}", api_key.trim()))
         .call()
         .map_err(|e| Error::Remote(format!("busqueda en SteamGridDB: {e}")))?
         .into_json()
@@ -64,7 +87,7 @@ fn best_grid_url(agent: &ureq::Agent, api_key: &str, steamgrid_id: u64) -> Resul
     let url = format!("{API_BASE}/grids/game/{steamgrid_id}?dimensions=600x900,342x482&types=static");
     let body: serde_json::Value = agent
         .get(&url)
-        .set("Authorization", &format!("Bearer {api_key}"))
+        .set("Authorization", &format!("Bearer {}", api_key.trim()))
         .call()
         .map_err(|e| Error::Remote(format!("caratulas de SteamGridDB: {e}")))?
         .into_json()
@@ -125,5 +148,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gm-steamgrid-{}", std::process::id()));
         let result = fetch_cover("clave", "Doom", "abc123", &dir);
         assert!(matches!(result, Err(Error::Unsupported(_))));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn fuera_de_windows_tampoco_se_valida_ninguna_clave() {
+        assert!(matches!(validate_key("clave"), Err(Error::Unsupported(_))));
     }
 }
