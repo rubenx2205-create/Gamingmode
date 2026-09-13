@@ -433,16 +433,35 @@ impl Optimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gm_core::config::PowerPlan;
 
     fn temp_path(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("gm-power-{}-{tag}.json", std::process::id()))
+    }
+
+    /// Configuracion inerte.
+    ///
+    /// Estas pruebas comprueban la maquina de estados del optimizador, no los
+    /// efectos sobre el sistema. Con la configuracion por defecto, ejecutarlas
+    /// en un Windows de verdad le cambiaria el plan de energia y le pararia
+    /// servicios a quien lance `cargo test`. Aqui no se toca nada.
+    fn inert() -> Power {
+        Power {
+            power_plan: PowerPlan::Leave,
+            stop_services: false,
+            services: Vec::new(),
+            auto_throttle: false,
+            extra_throttle: Vec::new(),
+            kill_explorer: false,
+            ..Power::default()
+        }
     }
 
     #[test]
     fn activar_dos_veces_no_duplica_el_estado() {
         let path = temp_path("doble");
         let _ = std::fs::remove_file(&path);
-        let mut optimizer = Optimizer::with_snapshot_path(Power::default(), path.clone());
+        let mut optimizer = Optimizer::with_snapshot_path(inert(), path.clone());
 
         optimizer.engage();
         assert!(optimizer.is_engaged());
@@ -458,7 +477,7 @@ mod tests {
     fn restaurar_borra_el_snapshot_de_disco() {
         let path = temp_path("limpieza");
         let _ = std::fs::remove_file(&path);
-        let mut optimizer = Optimizer::with_snapshot_path(Power::default(), path.clone());
+        let mut optimizer = Optimizer::with_snapshot_path(inert(), path.clone());
         optimizer.engage();
         optimizer.restore();
         assert!(!path.exists(), "el snapshot deberia desaparecer tras restaurar");
@@ -468,10 +487,12 @@ mod tests {
     fn se_revierte_un_snapshot_huerfano_al_arrancar() {
         let path = temp_path("huerfano");
         let mut stale = Snapshot::new();
-        stale.services.push(ServiceState { name: "SysMain".into(), was_running: true });
+        // Un servicio que no existe en ninguna maquina: se comprueba que se
+        // intenta revertir, sin arrancarle nada a nadie.
+        stale.services.push(ServiceState { name: "GamingModeServicioInexistente".into(), was_running: true });
         stale.save(&path).unwrap();
 
-        let mut optimizer = Optimizer::with_snapshot_path(Power::default(), path.clone());
+        let mut optimizer = Optimizer::with_snapshot_path(inert(), path.clone());
         let report = optimizer.recover_stale().expect("deberia detectar el snapshot huerfano");
         assert!(report.entries.iter().any(|e| e.area == "recuperacion"));
         assert!(!optimizer.is_engaged());
@@ -482,14 +503,35 @@ mod tests {
     fn sin_snapshot_previo_no_hay_recuperacion() {
         let path = temp_path("vacio");
         let _ = std::fs::remove_file(&path);
-        let mut optimizer = Optimizer::with_snapshot_path(Power::default(), path);
+        let mut optimizer = Optimizer::with_snapshot_path(inert(), path);
         assert!(optimizer.recover_stale().is_none());
     }
 
     #[test]
     fn restaurar_sin_activar_avisa_en_vez_de_fallar() {
-        let mut optimizer = Optimizer::with_snapshot_path(Power::default(), temp_path("sin-activar"));
+        let mut optimizer = Optimizer::with_snapshot_path(inert(), temp_path("sin-activar"));
         let report = optimizer.restore();
         assert!(report.entries.iter().any(|e| e.outcome == Outcome::Skipped));
+    }
+
+    #[test]
+    fn los_servicios_previstos_salen_del_catalogo_seguro() {
+        let mut config = inert();
+        config.stop_services = true;
+        {
+            let optimizer = Optimizer::with_snapshot_path(config.clone(), temp_path("servicios"));
+            // Lista vacia: seleccion recomendada.
+            assert_eq!(optimizer.planned_services(), services::defaults());
+        }
+
+        config.services = vec!["SysMain".into(), "Audiosrv".into()];
+        let optimizer = Optimizer::with_snapshot_path(config, temp_path("servicios"));
+        assert_eq!(optimizer.planned_services(), vec!["SysMain"], "lo que no esta en el catalogo se descarta");
+    }
+
+    #[test]
+    fn sin_parada_de_servicios_no_se_planifica_ninguno() {
+        let optimizer = Optimizer::with_snapshot_path(inert(), temp_path("sin-servicios"));
+        assert!(optimizer.planned_services().is_empty());
     }
 }

@@ -1,0 +1,47 @@
+# Compila el .exe de verdad (toolchain MSVC) y lo deja descargable como
+# artefacto de la ejecucion. Es la via oficial para tener el binario sin
+# instalarse nada en el equipo.
+name: Compilar Windows
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: gamingmode.exe (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formato
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Las pruebas del optimizador usan una configuracion inerte: no tocan
+      # los servicios ni el plan de energia de la maquina que las ejecuta.
+      - name: Pruebas
+        run: cargo test --workspace
+
+      - name: Compilar release
+        run: cargo build --release
+
+      - name: Publicar el binario
+        uses: actions/upload-artifact@v4
+        with:
+          name: gamingmode-windows-x64
+          path: target/release/gamingmode.exe
+          if-no-files-found: error
