@@ -89,7 +89,7 @@ impl Catalog {
                 size_bytes: item.metadata().map(|m| m.len()).unwrap_or(0),
             });
         }
-        self.platforms.sort_by(|a, b| a.display.to_lowercase().cmp(&b.display.to_lowercase()));
+        self.platforms.sort_by_key(|platform| platform.display.to_lowercase());
         log::info!("catalogo: {} plataformas en {}", self.platforms.len(), dir.display());
         Ok(())
     }

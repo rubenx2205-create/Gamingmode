@@ -25,17 +25,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Formato
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      # Las pruebas del optimizador usan una configuracion inerte: no tocan
-      # los servicios ni el plan de energia de la maquina que las ejecuta.
-      - name: Pruebas
-        run: cargo test --workspace
-
+      # El binario va primero y se publica antes que los controles de calidad:
+      # un lint nuevo de una version de clippy posterior no puede dejarte sin
+      # .exe descargable si el codigo compila.
       - name: Compilar release
         run: cargo build --release
 
@@ -45,3 +37,14 @@ jobs:
           name: gamingmode-windows-x64
           path: target/release/gamingmode.exe
           if-no-files-found: error
+
+      # Las pruebas del optimizador usan una configuracion inerte: no tocan
+      # los servicios ni el plan de energia de la maquina que las ejecuta.
+      - name: Pruebas
+        run: cargo test --workspace
+
+      - name: Formato
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
