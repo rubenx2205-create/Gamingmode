@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gm-core",
+    "crates/gm-input",
+    "crates/gm-power",
+    "crates/gm-catalog",
+    "crates/gm-shell",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+repository = "https://github.com/rubenx2205-create/Gamingmode"
+
+[workspace.dependencies]
+gm-core = { path = "crates/gm-core" }
+gm-input = { path = "crates/gm-input" }
+gm-power = { path = "crates/gm-power" }
+gm-catalog = { path = "crates/gm-catalog" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+log = "0.4"
+windows = "0.58"
+
+# Perfil pensado para un shell que debe arrancar rapido y ocupar poca RAM.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# El shell se pasa la mayor parte del tiempo en reposo: merece la pena que las
+# dependencias de render vayan optimizadas incluso en debug.
+[profile.dev.package."*"]
+opt-level = 2

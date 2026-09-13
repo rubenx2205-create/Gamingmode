@@ -1,0 +1,29 @@
+[package]
+name = "gm-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gamingmode"
+path = "src/main.rs"
+
+[dependencies]
+gm-core.workspace = true
+gm-input.workspace = true
+gm-power.workspace = true
+gm-catalog.workspace = true
+log.workspace = true
+serde.workspace = true
+# wgpu como backend: el render es de GPU y el shell puede quedarse a 1 fps
+# mientras se juega sin dejar de responder.
+eframe = { version = "0.29", default-features = false, features = ["wgpu", "default_fonts"] }
+egui = "0.29"
+env_logger = { version = "0.11", default-features = false, features = ["humantime"] }
+
+# Fuera de Windows winit necesita un backend de ventanas para compilar. No es
+# una plataforma soportada del producto, pero permite ejecutar en Linux las
+# pruebas de navegacion y de tema durante el desarrollo.
+[target.'cfg(not(windows))'.dependencies]
+eframe = { version = "0.29", default-features = false, features = ["wgpu", "default_fonts", "x11"] }

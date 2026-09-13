@@ -1,0 +1,20 @@
+[package]
+name = "gm-catalog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gm-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+
+# La descarga usa la pila TLS del propio Windows (schannel) en vez de empotrar
+# rustls/openssl en el binario: menos peso y menos superficie que mantener.
+# Fuera de Windows no se compila, asi que las pruebas del indice corren en
+# cualquier sitio sin necesitar openssl.
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "2.10", default-features = false, features = ["native-tls", "gzip"] }
+native-tls = "0.2"

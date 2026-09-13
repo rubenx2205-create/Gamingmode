@@ -1,0 +1,877 @@
+//! Estado y bucle principal del shell.
+//!
+//! El bucle esta disenado alrededor de una idea: **el shell no debe consumir
+//! nada cuando no esta haciendo nada**. egui solo repinta cuando se le pide, y
+//! aqui se le pide a un ritmo que depende de lo que este pasando (navegando,
+//! en reposo o con un juego en marcha).
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use gm_catalog::download::Downloader;
+use gm_catalog::{Catalog, PlatformIndex};
+use gm_core::config::Config;
+use gm_core::launcher::{self, Session};
+use gm_core::library::{Game, Launch, Library, Sort};
+use gm_input::{InputHub, NavAction, PollMode};
+use gm_power::{MemoryStatus, Optimizer, Report};
+
+use crate::browser::{Browser, Filter};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Library,
+    GameDetail,
+    Catalog,
+    CatalogEntries,
+    Downloads,
+    Settings,
+    /// Panel rapido del boton Guia; funciona tambien con un juego en marcha.
+    Quick,
+    Browser,
+}
+
+/// Para que se abrio el explorador de ficheros.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserPurpose {
+    AddExecutable,
+    AddRom,
+    PickCatalogDir,
+    PickDownloadDir,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Info,
+    Good,
+    Bad,
+}
+
+pub struct Toast {
+    pub text: String,
+    pub kind: ToastKind,
+    pub until: Instant,
+}
+
+/// Carga de una plataforma del catalogo en un hilo aparte.
+struct LoadJob {
+    id: String,
+    rx: Receiver<gm_core::Result<PlatformIndex>>,
+    started: Instant,
+}
+
+pub struct App {
+    pub config: Config,
+    pub library: Library,
+    pub catalog: Catalog,
+    pub downloader: Downloader,
+    pub input: InputHub,
+
+    /// El optimizador se maneja desde un hilo: parar servicios puede tardar
+    /// segundos y la interfaz no se puede quedar congelada mientras tanto.
+    optimizer: Arc<Mutex<Optimizer>>,
+    power_busy: Arc<AtomicBool>,
+    power_tx: Sender<Report>,
+    power_rx: Receiver<Report>,
+    pub power_engaged: bool,
+    pub last_report: Option<Report>,
+
+    pub session: Option<Session>,
+    pub view: View,
+    stack: Vec<View>,
+
+    // Biblioteca
+    pub library_focus: usize,
+    pub library_view: Vec<usize>,
+    library_dirty: bool,
+    pub query: String,
+    pub sort: Sort,
+    pub favorites_only: bool,
+    pub search_active: bool,
+
+    // Catalogo
+    pub platform_focus: usize,
+    pub open_platform: Option<String>,
+    pub entry_focus: usize,
+    pub entry_hits: Vec<usize>,
+    pub catalog_query: String,
+    loading: Option<LoadJob>,
+
+    // Explorador de ficheros
+    pub browser: Option<Browser>,
+    pub browser_purpose: BrowserPurpose,
+
+    // Menus
+    pub quick_focus: usize,
+    pub settings_focus: usize,
+    pub downloads_focus: usize,
+
+    pub toasts: Vec<Toast>,
+    pub memory: MemoryStatus,
+    last_memory_check: Instant,
+    pub last_activity: Instant,
+    download_meta: HashMap<u64, (String, String)>,
+    handled_downloads: HashSet<u64>,
+    pub columns: usize,
+}
+
+impl App {
+    pub fn new(ctx: &egui::Context) -> Self {
+        let config = Config::load().unwrap_or_else(|e| {
+            log::error!("config invalida, se usan los valores por defecto: {e}");
+            Config::default()
+        });
+        crate::theme::install(ctx, config.general.ui_scale);
+
+        let library = Library::load().unwrap_or_else(|e| {
+            log::error!("no se pudo leer la biblioteca: {e}");
+            Library::default()
+        });
+        let catalog = Catalog::new(config.catalog.index_dir.clone(), config.catalog.max_index_memory_mb);
+        let downloader = Downloader::new(2);
+        let input = InputHub::new(config.input.clone());
+        let optimizer = Optimizer::new(config.power.clone());
+        let (power_tx, power_rx) = mpsc::channel();
+
+        let mut app = Self {
+            config,
+            library,
+            catalog,
+            downloader,
+            input,
+            optimizer: Arc::new(Mutex::new(optimizer)),
+            power_busy: Arc::new(AtomicBool::new(false)),
+            power_tx,
+            power_rx,
+            power_engaged: false,
+            last_report: None,
+            session: None,
+            view: View::Library,
+            stack: Vec::new(),
+            library_focus: 0,
+            library_view: Vec::new(),
+            library_dirty: true,
+            query: String::new(),
+            sort: Sort::LastPlayed,
+            favorites_only: false,
+            search_active: false,
+            platform_focus: 0,
+            open_platform: None,
+            entry_focus: 0,
+            entry_hits: Vec::new(),
+            catalog_query: String::new(),
+            loading: None,
+            browser: None,
+            browser_purpose: BrowserPurpose::AddExecutable,
+            quick_focus: 0,
+            settings_focus: 0,
+            downloads_focus: 0,
+            toasts: Vec::new(),
+            memory: MemoryStatus::default(),
+            last_memory_check: Instant::now() - Duration::from_secs(60),
+            last_activity: Instant::now(),
+            download_meta: HashMap::new(),
+            handled_downloads: HashSet::new(),
+            columns: 5,
+        };
+
+        // Si la sesion anterior se fue sin restaurar, se deshace ahora.
+        let recovered = app.optimizer.lock().ok().and_then(|mut optimizer| optimizer.recover_stale());
+        if let Some(report) = recovered {
+            app.toast(ToastKind::Info, format!("Sesion anterior revertida: {}", report.summary()));
+        }
+        if app.config.power.engage_on_start {
+            app.toggle_power();
+        }
+        app
+    }
+
+    // ------------------------------------------------------------------
+    // Utilidades de estado
+    // ------------------------------------------------------------------
+
+    pub fn toast(&mut self, kind: ToastKind, text: impl Into<String>) {
+        let text = text.into();
+        log::info!("{text}");
+        self.toasts.push(Toast { text, kind, until: Instant::now() + Duration::from_secs(5) });
+        // No tiene sentido apilar mas de un punado.
+        if self.toasts.len() > 4 {
+            self.toasts.remove(0);
+        }
+    }
+
+    pub fn push_view(&mut self, view: View) {
+        self.stack.push(self.view);
+        self.view = view;
+    }
+
+    pub fn pop_view(&mut self) {
+        self.view = self.stack.pop().unwrap_or(View::Library);
+    }
+
+    /// Cambia de vista principal vaciando la pila de navegacion.
+    pub fn set_root_view(&mut self, view: View) {
+        self.stack.clear();
+        self.view = view;
+    }
+
+    /// Siguiente criterio de ordenacion de la biblioteca.
+    pub fn cycle_sort(&mut self) {
+        self.sort = match self.sort {
+            Sort::LastPlayed => Sort::Title,
+            Sort::Title => Sort::PlayTime,
+            Sort::PlayTime => Sort::Added,
+            Sort::Added => Sort::LastPlayed,
+        };
+        self.mark_library_dirty();
+    }
+
+    pub fn power_busy(&self) -> bool {
+        self.power_busy.load(Ordering::Relaxed)
+    }
+
+    /// Ritmo al que conviene trabajar ahora mismo.
+    pub fn poll_mode(&self) -> PollMode {
+        if self.session.is_some() && self.view != View::Quick {
+            PollMode::InGame
+        } else if self.last_activity.elapsed() > Duration::from_secs(self.config.general.idle_after_secs) {
+            PollMode::Idle
+        } else {
+            PollMode::Active
+        }
+    }
+
+    pub fn mark_library_dirty(&mut self) {
+        self.library_dirty = true;
+    }
+
+    /// Recalcula la lista filtrada solo cuando algo ha cambiado: ordenar unos
+    /// miles de juegos en cada frame seria tirar CPU a la basura.
+    fn refresh_library_view(&mut self) {
+        if !self.library_dirty {
+            return;
+        }
+        self.library_view = self.library.view(&self.query, None, self.sort, self.favorites_only);
+        self.library_focus = self.library_focus.min(self.library_view.len().saturating_sub(1));
+        self.library_dirty = false;
+    }
+
+    pub fn focused_game(&self) -> Option<&Game> {
+        let index = *self.library_view.get(self.library_focus)?;
+        self.library.games.get(index)
+    }
+
+    // ------------------------------------------------------------------
+    // Acciones
+    // ------------------------------------------------------------------
+
+    pub fn launch_focused(&mut self, ctx: &egui::Context) {
+        let Some(game) = self.focused_game().cloned() else { return };
+        if self.session.is_some() {
+            self.toast(ToastKind::Info, "Ya hay un juego en marcha");
+            return;
+        }
+        match launcher::launch(&game, &self.config) {
+            Ok(session) => {
+                self.input.rumble(0.4, Duration::from_millis(180), Instant::now());
+                self.toast(ToastKind::Good, format!("Lanzando {}", game.title));
+                self.session = Some(session);
+                self.view = View::Library;
+                self.stack.clear();
+                if self.config.general.minimize_while_playing {
+                    // Apartarse: el juego debe quedarse con la pantalla y con
+                    // la GPU.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+            }
+            Err(e) => self.toast(ToastKind::Bad, format!("No se pudo lanzar {}: {e}", game.title)),
+        }
+    }
+
+    pub fn toggle_favorite(&mut self) {
+        let Some(index) = self.library_view.get(self.library_focus).copied() else { return };
+        if let Some(game) = self.library.games.get_mut(index) {
+            game.favorite = !game.favorite;
+            let message = if game.favorite { "Anadido a favoritos" } else { "Quitado de favoritos" };
+            self.save_library();
+            self.mark_library_dirty();
+            self.toast(ToastKind::Info, message);
+        }
+    }
+
+    pub fn remove_focused(&mut self) {
+        let Some(index) = self.library_view.get(self.library_focus).copied() else { return };
+        let Some(game) = self.library.games.get(index).cloned() else { return };
+        self.library.remove(&game.id);
+        self.save_library();
+        self.mark_library_dirty();
+        self.toast(ToastKind::Info, format!("{} quitado de la biblioteca", game.title));
+        if self.view == View::GameDetail {
+            self.pop_view();
+        }
+    }
+
+    pub fn save_library(&mut self) {
+        if let Err(e) = self.library.save() {
+            self.toast(ToastKind::Bad, format!("No se pudo guardar la biblioteca: {e}"));
+        }
+    }
+
+    pub fn save_config(&mut self) {
+        let power = self.config.power.clone();
+        if let Ok(mut optimizer) = self.optimizer.lock() {
+            optimizer.set_config(power);
+        }
+        self.input.set_settings(self.config.input.clone());
+        if let Err(e) = self.config.save() {
+            self.toast(ToastKind::Bad, format!("No se pudo guardar la configuracion: {e}"));
+        }
+    }
+
+    /// Activa o revierte el modo juego en segundo plano.
+    pub fn toggle_power(&mut self) {
+        if self.power_busy() {
+            self.toast(ToastKind::Info, "El modo juego ya esta trabajando...");
+            return;
+        }
+        let optimizer = Arc::clone(&self.optimizer);
+        let busy = Arc::clone(&self.power_busy);
+        let tx = self.power_tx.clone();
+        busy.store(true, Ordering::Relaxed);
+        std::thread::spawn(move || {
+            let report = match optimizer.lock() {
+                Ok(mut optimizer) => {
+                    if optimizer.is_engaged() {
+                        optimizer.restore()
+                    } else {
+                        optimizer.engage()
+                    }
+                }
+                Err(_) => Report::default(),
+            };
+            busy.store(false, Ordering::Relaxed);
+            let _ = tx.send(report);
+        });
+    }
+
+    pub fn open_browser(&mut self, purpose: BrowserPurpose) {
+        let filter = match purpose {
+            BrowserPurpose::AddExecutable => Filter::Executables,
+            BrowserPurpose::AddRom => Filter::Roms,
+            BrowserPurpose::PickCatalogDir | BrowserPurpose::PickDownloadDir => Filter::Directories,
+        };
+        let start = match purpose {
+            BrowserPurpose::PickCatalogDir => self.config.catalog.index_dir.clone(),
+            BrowserPurpose::PickDownloadDir => self.config.catalog.download_dir.clone(),
+            _ => None,
+        };
+        self.browser_purpose = purpose;
+        self.browser = Some(Browser::new(filter, start));
+        self.push_view(View::Browser);
+    }
+
+    /// El explorador ha devuelto una ruta (fichero o carpeta).
+    pub fn browser_result(&mut self, path: PathBuf) {
+        match self.browser_purpose {
+            BrowserPurpose::AddExecutable => {
+                let title = Game::title_from_path(&path);
+                let mut game = Game::new(
+                    title.clone(),
+                    Launch::Executable { path: path.clone(), args: Vec::new(), working_dir: None },
+                );
+                game.collection = "PC".to_string();
+                if self.library.add(game) {
+                    self.save_library();
+                    self.mark_library_dirty();
+                    self.toast(ToastKind::Good, format!("{title} anadido a la biblioteca"));
+                } else {
+                    self.toast(ToastKind::Info, format!("{title} ya estaba en la biblioteca"));
+                }
+                self.pop_view();
+            }
+            BrowserPurpose::AddRom => {
+                let title = Game::title_from_path(&path);
+                let platform = self.open_platform.clone().unwrap_or_default();
+                let mut game =
+                    Game::new(title.clone(), Launch::Rom { path, platform: platform.clone(), emulator_id: None });
+                game.collection = gm_catalog::display_name(&platform);
+                if self.library.add(game) {
+                    self.save_library();
+                    self.mark_library_dirty();
+                    self.toast(ToastKind::Good, format!("{title} anadido a la biblioteca"));
+                }
+                self.pop_view();
+            }
+            BrowserPurpose::PickCatalogDir => {
+                self.config.catalog.index_dir = Some(path.clone());
+                self.save_config();
+                if let Err(e) = self.catalog.set_dir(Some(path)) {
+                    self.toast(ToastKind::Bad, format!("Catalogo: {e}"));
+                } else {
+                    self.toast(
+                        ToastKind::Good,
+                        format!("Catalogo: {} plataformas detectadas", self.catalog.platforms().len()),
+                    );
+                }
+                self.pop_view();
+            }
+            BrowserPurpose::PickDownloadDir => {
+                self.config.catalog.download_dir = Some(path);
+                self.save_config();
+                self.toast(ToastKind::Good, "Carpeta de descargas actualizada");
+                self.pop_view();
+            }
+        }
+    }
+
+    /// Abre una plataforma del catalogo, cargandola en un hilo si hace falta.
+    pub fn open_platform(&mut self, id: String) {
+        self.entry_focus = 0;
+        self.catalog_query.clear();
+        if self.catalog.is_loaded(&id) {
+            self.catalog.touch(&id);
+            self.open_platform = Some(id);
+            self.refresh_entry_hits();
+            self.push_view(View::CatalogEntries);
+            return;
+        }
+        let Some(info) = self.catalog.platform(&id).cloned() else {
+            self.toast(ToastKind::Bad, format!("La plataforma '{id}' ya no esta en el catalogo"));
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        let path = info.path.clone();
+        let job_id = id.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(gm_catalog::load_platform(&path, &job_id));
+        });
+        self.loading = Some(LoadJob { id, rx, started: Instant::now() });
+    }
+
+    pub fn is_loading(&self) -> Option<(&str, Duration)> {
+        self.loading.as_ref().map(|job| (job.id.as_str(), job.started.elapsed()))
+    }
+
+    pub fn refresh_entry_hits(&mut self) {
+        let Some(platform) = self.open_platform.clone() else {
+            self.entry_hits.clear();
+            return;
+        };
+        self.entry_hits = self.catalog.search(&platform, &self.catalog_query, self.config.catalog.max_search_results);
+        self.entry_focus = self.entry_focus.min(self.entry_hits.len().saturating_sub(1));
+    }
+
+    /// Encola la descarga de la entrada enfocada.
+    pub fn download_focused_entry(&mut self) {
+        let Some(platform) = self.open_platform.clone() else { return };
+        let Some(index) = self.entry_hits.get(self.entry_focus).copied() else { return };
+        let Some(entry) = self.catalog.get(&platform).and_then(|p| p.entries.get(index)).cloned() else { return };
+        let Some(url) = entry.primary_url().map(|u| u.to_string()) else {
+            self.toast(ToastKind::Bad, "Esa entrada no tiene enlace de descarga");
+            return;
+        };
+        if !self.downloader.is_available() {
+            self.toast(ToastKind::Bad, "Las descargas solo funcionan en Windows");
+            return;
+        }
+        let dest = self.config.download_dir().join(&platform).join(entry.file_name());
+        let id = self.downloader.enqueue(entry.name.clone(), url, dest);
+        self.download_meta.insert(id, (platform, entry.name.clone()));
+        self.toast(ToastKind::Good, format!("Descargando {}", entry.name));
+    }
+
+    // ------------------------------------------------------------------
+    // Trabajo de fondo
+    // ------------------------------------------------------------------
+
+    fn pump(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
+
+        // Juego terminado?
+        let finished = match self.session.as_mut() {
+            Some(session) => !session.is_running(),
+            None => false,
+        };
+        if finished {
+            if let Some(session) = self.session.take() {
+                let seconds = session.elapsed_secs();
+                self.library.record_session(&session.game_id, seconds);
+                self.save_library();
+                self.mark_library_dirty();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.toast(ToastKind::Info, format!("{}: {}", session.title, gm_core::util::format_playtime(seconds)));
+                self.last_activity = now;
+            }
+        }
+
+        // Plataforma del catalogo cargada?
+        if let Some(job) = self.loading.as_ref() {
+            match job.rx.try_recv() {
+                Ok(Ok(index)) => {
+                    let id = index.id.clone();
+                    let count = index.entries.len();
+                    self.catalog.insert(index);
+                    self.open_platform = Some(id.clone());
+                    self.loading = None;
+                    self.refresh_entry_hits();
+                    self.push_view(View::CatalogEntries);
+                    self.toast(ToastKind::Info, format!("{count} entradas cargadas"));
+                }
+                Ok(Err(e)) => {
+                    self.toast(ToastKind::Bad, format!("No se pudo cargar la plataforma: {e}"));
+                    self.loading = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => self.loading = None,
+            }
+        }
+
+        // Informe del optimizador.
+        while let Ok(report) = self.power_rx.try_recv() {
+            let kind = if report.count(gm_power::Outcome::Failed) > 0 { ToastKind::Info } else { ToastKind::Good };
+            let summary = report.summary();
+            self.power_engaged = self.optimizer.try_lock().map(|o| o.is_engaged()).unwrap_or(self.power_engaged);
+            let prefix = if self.power_engaged { "Modo juego activo" } else { "Sistema restaurado" };
+            self.toast(kind, format!("{prefix}: {summary}"));
+            self.last_report = Some(report);
+        }
+
+        // Descargas.
+        self.downloader.pump();
+        self.collect_finished_downloads();
+
+        // Memoria para la barra superior, dos veces por segundo como mucho.
+        if now.duration_since(self.last_memory_check) > Duration::from_millis(1500) {
+            self.last_memory_check = now;
+            if let Ok(status) = gm_power::memory_status() {
+                self.memory = status;
+            }
+        }
+
+        self.toasts.retain(|toast| toast.until > now);
+    }
+
+    /// Anade a la biblioteca las ROMs cuya descarga acaba de terminar.
+    fn collect_finished_downloads(&mut self) {
+        let finished: Vec<(u64, PathBuf)> = self
+            .downloader
+            .items()
+            .iter()
+            .filter(|item| item.snapshot().state == gm_catalog::download::DownloadState::Done)
+            .filter(|item| !self.handled_downloads.contains(&item.id))
+            .map(|item| (item.id, item.dest.clone()))
+            .collect();
+
+        for (id, path) in finished {
+            self.handled_downloads.insert(id);
+            let Some((platform, name)) = self.download_meta.get(&id).cloned() else { continue };
+            let mut game = Game::new(name.clone(), Launch::Rom { path, platform: platform.clone(), emulator_id: None });
+            game.collection = gm_catalog::display_name(&platform);
+            if self.library.add(game) {
+                self.save_library();
+                self.mark_library_dirty();
+            }
+            self.toast(ToastKind::Good, format!("{name} descargado y anadido a la biblioteca"));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Entrada
+    // ------------------------------------------------------------------
+
+    fn collect_actions(&mut self, ctx: &egui::Context) -> Vec<NavAction> {
+        let now = Instant::now();
+        let frame = self.input.poll(now);
+        let mut actions = frame.actions;
+
+        // Mientras se escribe en el buscador el teclado es texto, no
+        // navegacion; el mando sigue funcionando con normalidad.
+        let keyboard = crate::nav::keyboard_actions(ctx);
+        if self.search_active {
+            actions.extend(
+                keyboard.into_iter().filter(|a| matches!(a, NavAction::Back | NavAction::Accept | NavAction::Guide)),
+            );
+        } else {
+            actions.extend(keyboard);
+        }
+
+        if !actions.is_empty() || frame.activity {
+            self.last_activity = now;
+        }
+        actions
+    }
+
+    fn handle_actions(&mut self, actions: &[NavAction], ctx: &egui::Context) {
+        for action in actions {
+            // El boton Guia y el menu funcionan desde cualquier sitio, incluso
+            // con un juego en marcha.
+            match action {
+                NavAction::Guide | NavAction::Menu if self.view != View::Quick => {
+                    self.quick_focus = 0;
+                    self.push_view(View::Quick);
+                    if self.session.is_some() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            self.handle_action(*action, ctx);
+        }
+    }
+
+    fn handle_action(&mut self, action: NavAction, ctx: &egui::Context) {
+        match self.view {
+            View::Library => self.handle_library_action(action, ctx),
+            View::GameDetail => self.handle_detail_action(action, ctx),
+            View::Catalog => self.handle_catalog_action(action),
+            View::CatalogEntries => self.handle_entries_action(action),
+            View::Downloads => self.handle_downloads_action(action),
+            View::Settings => self.handle_settings_action(action),
+            View::Quick => self.handle_quick_action(action, ctx),
+            View::Browser => self.handle_browser_action(action),
+        }
+    }
+
+    fn handle_library_action(&mut self, action: NavAction, ctx: &egui::Context) {
+        let len = self.library_view.len();
+        match action {
+            NavAction::Up
+            | NavAction::Down
+            | NavAction::Left
+            | NavAction::Right
+            | NavAction::PageUp
+            | NavAction::PageDown => {
+                self.library_focus = crate::nav::move_focus(self.library_focus, len, self.columns, action);
+            }
+            NavAction::Accept => {
+                if self.search_active {
+                    self.search_active = false;
+                } else if len > 0 {
+                    self.push_view(View::GameDetail);
+                }
+            }
+            NavAction::Back => {
+                if self.search_active {
+                    self.search_active = false;
+                    self.query.clear();
+                    self.mark_library_dirty();
+                } else if !self.query.is_empty() {
+                    self.query.clear();
+                    self.mark_library_dirty();
+                }
+            }
+            NavAction::Favorite => self.toggle_favorite(),
+            NavAction::Context => self.open_browser(BrowserPurpose::AddExecutable),
+            NavAction::Search => {
+                self.search_active = !self.search_active;
+            }
+            NavAction::TabNext => self.push_view(View::Catalog),
+            NavAction::TabPrev => self.cycle_sort(),
+            _ => {}
+        }
+        let _ = ctx;
+    }
+
+    fn handle_detail_action(&mut self, action: NavAction, ctx: &egui::Context) {
+        match action {
+            NavAction::Accept => self.launch_focused(ctx),
+            NavAction::Back => self.pop_view(),
+            NavAction::Favorite => self.toggle_favorite(),
+            NavAction::Context => self.remove_focused(),
+            _ => {}
+        }
+    }
+
+    fn handle_catalog_action(&mut self, action: NavAction) {
+        let len = self.catalog.platforms().len();
+        match action {
+            NavAction::Up
+            | NavAction::Down
+            | NavAction::Left
+            | NavAction::Right
+            | NavAction::PageUp
+            | NavAction::PageDown => {
+                self.platform_focus = crate::nav::move_focus(self.platform_focus, len, self.columns, action);
+            }
+            NavAction::Accept => {
+                if let Some(info) = self.catalog.platforms().get(self.platform_focus) {
+                    let id = info.id.clone();
+                    self.open_platform(id);
+                }
+            }
+            NavAction::Back => self.pop_view(),
+            NavAction::Context => self.open_browser(BrowserPurpose::PickCatalogDir),
+            NavAction::TabNext => self.push_view(View::Downloads),
+            _ => {}
+        }
+    }
+
+    fn handle_entries_action(&mut self, action: NavAction) {
+        let len = self.entry_hits.len();
+        match action {
+            NavAction::Up | NavAction::Down | NavAction::PageUp | NavAction::PageDown => {
+                self.entry_focus = crate::nav::move_list(self.entry_focus, len, action);
+            }
+            NavAction::Accept => {
+                if self.search_active {
+                    self.search_active = false;
+                } else {
+                    self.download_focused_entry();
+                }
+            }
+            NavAction::Back => {
+                if self.search_active {
+                    self.search_active = false;
+                } else if !self.catalog_query.is_empty() {
+                    self.catalog_query.clear();
+                    self.refresh_entry_hits();
+                } else {
+                    self.pop_view();
+                }
+            }
+            NavAction::Search => self.search_active = !self.search_active,
+            NavAction::Context => self.open_browser(BrowserPurpose::AddRom),
+            NavAction::TabNext => self.push_view(View::Downloads),
+            _ => {}
+        }
+    }
+
+    fn handle_downloads_action(&mut self, action: NavAction) {
+        let len = self.downloader.items().len();
+        match action {
+            NavAction::Up | NavAction::Down => {
+                self.downloads_focus = crate::nav::move_list(self.downloads_focus, len, action);
+            }
+            NavAction::Context => {
+                if let Some(item) = self.downloader.items().get(self.downloads_focus) {
+                    let id = item.id;
+                    self.downloader.cancel(id);
+                }
+            }
+            NavAction::Favorite => self.downloader.clear_finished(),
+            NavAction::Back => self.pop_view(),
+            _ => {}
+        }
+    }
+
+    fn handle_browser_action(&mut self, action: NavAction) {
+        let Some(browser) = self.browser.as_mut() else {
+            self.pop_view();
+            return;
+        };
+        match action {
+            NavAction::Up | NavAction::Down | NavAction::PageUp | NavAction::PageDown => browser.navigate(action),
+            NavAction::Accept => {
+                if let Some(path) = browser.open_selected() {
+                    self.browser_result(path);
+                }
+            }
+            NavAction::Favorite => {
+                // En modo carpeta: elegir la carpeta actual.
+                if browser.filter == Filter::Directories {
+                    if let Some(dir) = browser.current_dir() {
+                        self.browser_result(dir);
+                    }
+                }
+            }
+            NavAction::Back => {
+                if !browser.go_up() {
+                    self.browser = None;
+                    self.pop_view();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_settings_action(&mut self, action: NavAction) {
+        match action {
+            NavAction::Up | NavAction::Down => {
+                self.settings_focus = crate::nav::move_list(self.settings_focus, crate::views::SETTINGS_ROWS, action);
+            }
+            NavAction::Left | NavAction::Right | NavAction::Accept => {
+                let forward = !matches!(action, NavAction::Left);
+                self.adjust_setting(self.settings_focus, forward);
+            }
+            NavAction::Back => {
+                self.save_config();
+                self.pop_view();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_quick_action(&mut self, action: NavAction, ctx: &egui::Context) {
+        let options = self.quick_options();
+        match action {
+            NavAction::Up | NavAction::Down => {
+                self.quick_focus = crate::nav::move_list(self.quick_focus, options.len(), action);
+            }
+            NavAction::Accept => {
+                let choice = options.get(self.quick_focus).copied();
+                self.run_quick_option(choice, ctx);
+            }
+            NavAction::Back | NavAction::Guide | NavAction::Menu => {
+                self.pop_view();
+                if self.session.is_some() && self.config.general.minimize_while_playing {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn exit(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+}
+
+impl eframe::App for App {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        let bg = crate::theme::PALETTE.bg;
+        [bg.r() as f32 / 255.0, bg.g() as f32 / 255.0, bg.b() as f32 / 255.0, 1.0]
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.pump(ctx);
+        self.refresh_library_view();
+
+        let actions = self.collect_actions(ctx);
+        self.handle_actions(&actions, ctx);
+        // Una accion puede haber cambiado los filtros.
+        self.refresh_library_view();
+
+        self.draw(ctx);
+
+        // Pulso del bucle: lo que marca la diferencia entre un shell que se
+        // olvida en segundo plano y uno que se come un nucleo sin hacer nada.
+        let fps = match self.poll_mode() {
+            PollMode::InGame => self.config.general.background_fps,
+            PollMode::Idle => self.config.general.idle_fps,
+            PollMode::Active => self.config.general.active_fps,
+        };
+        ctx.request_repaint_after(Duration::from_secs_f32(1.0 / fps.max(1) as f32));
+    }
+
+    fn on_exit(&mut self) {
+        self.input.stop_rumble();
+        // Nunca se sale dejando el sistema tocado.
+        if self.config.power.restore_on_exit {
+            if let Ok(mut optimizer) = self.optimizer.lock() {
+                if optimizer.is_engaged() {
+                    let report = optimizer.restore();
+                    log::info!("restaurado al salir: {}", report.summary());
+                }
+            }
+        }
+        let _ = self.library.save();
+        let _ = self.config.save();
+    }
+}
