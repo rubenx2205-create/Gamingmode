@@ -5,7 +5,7 @@
 //! aqui se le pide a un ritmo que depende de lo que este pasando (navegando,
 //! en reposo o con un juego en marcha).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -58,6 +58,19 @@ enum CoverFetchResult {
     Found { game_id: String, title: String, path: PathBuf, notify: bool },
     NotFound { title: String, error: String, notify: bool },
 }
+
+/// Una busqueda de caratula pendiente de lanzar.
+struct CoverRequest {
+    game_id: String,
+    title: String,
+    notify: bool,
+}
+
+/// Cuantas busquedas de caratula corren a la vez como mucho. "Descargar las
+/// que faltan" puede encolar toda la biblioteca de golpe; sin este limite
+/// serian otros tantos hilos e igual de tantas peticiones simultaneas a
+/// SteamGridDB.
+const MAX_CONCURRENT_COVER_FETCHES: usize = 3;
 
 /// Para que se abrio el explorador de ficheros.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +129,11 @@ pub struct App {
     pub sort: Sort,
     pub favorites_only: bool,
     pub search_active: bool,
+    /// Ficha de un juego con el titulo en edicion: util para dejar un nombre
+    /// mas parecido al oficial antes de buscarle caratula en SteamGridDB,
+    /// sin salir del modo juego a tocar ningun fichero a mano.
+    pub renaming: bool,
+    pub rename_draft: String,
 
     // Catalogo
     pub platform_focus: usize,
@@ -164,6 +182,13 @@ pub struct App {
     /// exito o sin el: evita volver a pedirla solo porque la tarjeta ha
     /// vuelto a entrar en pantalla al desplazar la rejilla.
     cover_attempted: HashSet<String>,
+    /// Peticiones pendientes de lanzar: "Descargar las que faltan" en una
+    /// biblioteca grande puede encolar cientos de una vez, y no deben salir
+    /// todas como hilos simultaneos (satura la maquina un instante y es facil
+    /// que SteamGridDB responda 429). Se lanzan de a
+    /// `MAX_CONCURRENT_COVER_FETCHES`, igual que hace el descargador de ROMs.
+    cover_queue: VecDeque<CoverRequest>,
+    cover_active: usize,
     cover_tx: Sender<CoverFetchResult>,
     cover_rx: Receiver<CoverFetchResult>,
 
@@ -222,6 +247,8 @@ impl App {
             sort: Sort::LastPlayed,
             favorites_only: false,
             search_active: false,
+            renaming: false,
+            rename_draft: String::new(),
             platform_focus: 0,
             open_platform: None,
             entry_focus: 0,
@@ -244,7 +271,13 @@ impl App {
             pending_fullscreen: None,
             pending_theme_apply: false,
             first_frame: true,
-            last_memory_check: Instant::now() - Duration::from_secs(60),
+            // Resta saturada: en Windows `Instant` cuenta desde el arranque
+            // del sistema, y un PC recien encendido (el caso de uso tipico de
+            // un shell de salon) puede llevar menos de 60 s vivo. Con `-`
+            // normal eso hace panic; aqui, en el peor caso, la primera
+            // lectura de memoria simplemente se retrasa 1.5 s en vez de
+            // hacerse en el primer frame.
+            last_memory_check: Instant::now().checked_sub(Duration::from_secs(60)).unwrap_or_else(Instant::now),
             last_activity: Instant::now(),
             input_source: crate::nav::InputSource::KeyboardMouse,
             download_meta: HashMap::new(),
@@ -252,6 +285,8 @@ impl App {
             columns: 5,
             covers: CoverTextures::default(),
             cover_attempted: HashSet::new(),
+            cover_queue: VecDeque::new(),
+            cover_active: 0,
             cover_tx,
             cover_rx,
             cover_key_draft: String::new(),
@@ -400,7 +435,23 @@ impl App {
                     optimizer.set_game_pid(session.pid);
                 }
                 self.input.rumble(0.4, Duration::from_millis(180), Instant::now());
-                self.toast(ToastKind::Good, format!("Lanzando {}", game.title));
+                if session.tracked {
+                    self.toast(ToastKind::Good, format!("Lanzando {}", game.title));
+                } else {
+                    // Un atajo lo abre el sistema por su cuenta: no queda
+                    // proceso hijo al que seguirle la pista, asi que el modo
+                    // juego no puede darse cuenta solo de cuando se cierra.
+                    // Sin este aviso, alguien podria quedarse sin saber por
+                    // que la pantalla sigue minimizada (o el sistema sigue
+                    // "optimizado") mucho despues de haber cerrado el juego.
+                    self.toast(
+                        ToastKind::Info,
+                        format!(
+                            "Abriendo {} · como es un atajo, termina la sesion tu mismo desde el boton Guia cuando acabes",
+                            game.title
+                        ),
+                    );
+                }
                 self.session = Some(session);
                 self.view = View::Library;
                 self.stack.clear();
@@ -435,6 +486,40 @@ impl App {
         if self.view == View::GameDetail {
             self.pop_view();
         }
+    }
+
+    /// Abre el titulo del juego enfocado para edicion. Pensado sobre todo
+    /// para arreglar el nombre que salio de un .exe ("Mi Juego v1.2.3-win64")
+    /// antes de pedirle caratula a SteamGridDB, que busca por titulo: un
+    /// nombre mas parecido al oficial es la diferencia entre encontrarla o no.
+    pub fn begin_rename(&mut self) {
+        let Some(game) = self.focused_game() else { return };
+        self.rename_draft = game.title.clone();
+        self.renaming = true;
+    }
+
+    /// Descarta la edicion sin tocar el titulo guardado.
+    pub fn cancel_rename(&mut self) {
+        self.renaming = false;
+    }
+
+    pub fn confirm_rename(&mut self) {
+        let Some(game) = self.focused_game() else {
+            self.renaming = false;
+            return;
+        };
+        let id = game.id.clone();
+        let title = self.rename_draft.trim().to_string();
+        if title.is_empty() {
+            self.toast(ToastKind::Bad, "El titulo no puede quedar vacio");
+            return;
+        }
+        if self.library.rename(&id, title.clone()) {
+            self.save_library();
+            self.mark_library_dirty();
+            self.toast(ToastKind::Info, format!("Renombrado a \"{title}\""));
+        }
+        self.renaming = false;
     }
 
     pub fn save_library(&mut self) {
@@ -692,9 +777,11 @@ impl App {
         self.config.covers.steamgrid_api_key.clone().filter(|key| !key.trim().is_empty())
     }
 
-    /// Lanza la busqueda de una caratula en un hilo aparte. No abre ninguna
-    /// ventana ni dialogo: el resultado vuelve por el canal y `pump()` lo
-    /// recoge, avisando en pantalla solo si `notify` esta activo.
+    /// Lanza la busqueda de una caratula en un hilo aparte, sin pasar por la
+    /// cola: solo se llama desde `pump_cover_queue`, que ya ha comprobado el
+    /// limite de concurrencia. No abre ninguna ventana ni dialogo: el
+    /// resultado vuelve por el canal y `pump()` lo recoge, avisando en
+    /// pantalla solo si `notify` esta activo.
     fn spawn_cover_fetch(&self, api_key: String, game_id: String, title: String, notify: bool) {
         let dest_dir = gm_core::paths::covers_dir();
         let tx = self.cover_tx.clone();
@@ -707,6 +794,29 @@ impl App {
         });
     }
 
+    /// Encola una busqueda de caratula. Puede tardar en arrancar si ya hay
+    /// `MAX_CONCURRENT_COVER_FETCHES` en marcha: `pump_cover_queue` la lanza
+    /// en cuanto haya hueco.
+    fn enqueue_cover_fetch(&mut self, game_id: &str, title: &str, notify: bool) {
+        self.cover_queue.push_back(CoverRequest { game_id: game_id.to_string(), title: title.to_string(), notify });
+    }
+
+    /// Se llama una vez por frame: lanza peticiones encoladas hasta el limite
+    /// de concurrencia. Si la clave desaparecio a media cola (el usuario la
+    /// borro mientras habia busquedas pendientes), se descarta el resto en
+    /// silencio, ya no hay con que buscar.
+    fn pump_cover_queue(&mut self) {
+        while self.cover_active < MAX_CONCURRENT_COVER_FETCHES {
+            let Some(request) = self.cover_queue.pop_front() else { break };
+            let Some(api_key) = self.cover_key() else {
+                self.cover_queue.clear();
+                break;
+            };
+            self.cover_active += 1;
+            self.spawn_cover_fetch(api_key, request.game_id, request.title, request.notify);
+        }
+    }
+
     /// Busca la caratula de un juego que acaba de aparecer en pantalla, sin
     /// que el usuario haya pedido nada: silenciosa, y solo una vez por
     /// partida mientras el shell este abierto (si falla, no se reintenta solo
@@ -715,9 +825,11 @@ impl App {
         if !self.config.covers.auto_fetch || self.cover_attempted.contains(game_id) {
             return;
         }
-        let Some(api_key) = self.cover_key() else { return };
+        if self.cover_key().is_none() {
+            return;
+        }
         self.cover_attempted.insert(game_id.to_string());
-        self.spawn_cover_fetch(api_key, game_id.to_string(), title.to_string(), false);
+        self.enqueue_cover_fetch(game_id, title, false);
     }
 
     /// Busca (o vuelve a buscar) la caratula de un juego concreto porque el
@@ -726,25 +838,25 @@ impl App {
     /// cuando la busqueda automatica no encontro nada (titulo raro sacado del
     /// nombre del .exe, por ejemplo).
     pub fn fetch_cover_now(&mut self, game_id: &str, title: &str) {
-        let Some(api_key) = self.cover_key() else {
+        if self.cover_key().is_none() {
             self.toast(ToastKind::Bad, "Antes configura una clave en Ajustes → Caratulas automaticas");
             return;
-        };
+        }
         self.toast(ToastKind::Info, format!("Buscando caratula de \"{title}\"..."));
         self.cover_attempted.insert(game_id.to_string());
-        self.spawn_cover_fetch(api_key, game_id.to_string(), title.to_string(), true);
+        self.enqueue_cover_fetch(game_id, title, true);
     }
 
-    /// Lanza una busqueda para cada juego de la biblioteca que todavia no
-    /// tiene caratula, de una vez. Es el boton "Descargar las que faltan" de
-    /// la pantalla de SteamGridDB: el motivo de tener la clave puesta es
-    /// justo este, no quedarse esperando a que cada juego pase por la
-    /// rejilla.
+    /// Encola una busqueda para cada juego de la biblioteca que todavia no
+    /// tiene caratula. Es el boton "Descargar las que faltan" de la pantalla
+    /// de SteamGridDB: el motivo de tener la clave puesta es justo este, no
+    /// quedarse esperando a que cada juego pase por la rejilla. Se lanzan de
+    /// pocas en pocas (`MAX_CONCURRENT_COVER_FETCHES`), no todas de golpe.
     pub fn fetch_all_missing_covers(&mut self) {
-        let Some(api_key) = self.cover_key() else {
+        if self.cover_key().is_none() {
             self.toast(ToastKind::Bad, "Antes configura una clave en Ajustes → Caratulas automaticas");
             return;
-        };
+        }
         let missing: Vec<(String, String)> = self
             .library
             .games
@@ -759,7 +871,7 @@ impl App {
         self.toast(ToastKind::Info, format!("Buscando caratula para {} juegos...", missing.len()));
         for (game_id, title) in missing {
             self.cover_attempted.insert(game_id.clone());
-            self.spawn_cover_fetch(api_key.clone(), game_id, title, false);
+            self.enqueue_cover_fetch(&game_id, &title, false);
         }
     }
 
@@ -834,6 +946,17 @@ impl App {
         self.pop_view();
     }
 
+    /// Sale de la pantalla sin guardar nada: la forma de arrepentirse de un
+    /// cambio en el borrador -sobre todo de un "Borrar" pulsado sin querer,
+    /// que hasta aqui solo se podia deshacer volviendo a escribir la clave a
+    /// mano- antes de que Atras lo convierta en definitivo. La clave que
+    /// hubiera guardada, si la habia, se queda exactamente como estaba.
+    pub fn cancel_cover_setup(&mut self) {
+        self.cover_key_editing = false;
+        self.cover_key_test = KeyTestState::Idle;
+        self.pop_view();
+    }
+
     // ------------------------------------------------------------------
     // Trabajo de fondo
     // ------------------------------------------------------------------
@@ -841,9 +964,15 @@ impl App {
     fn pump(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
 
+        // Decodificados de caratula pendientes: la lectura y el redimensionado
+        // corren en hilos aparte (ver covers.rs), aqui solo se suben a la GPU
+        // los que ya han terminado.
+        self.covers.pump(ctx);
+
         // Caratulas de SteamGridDB que acaban de llegar (o de fallar).
         let mut cover_arrived = false;
         while let Ok(result) = self.cover_rx.try_recv() {
+            self.cover_active = self.cover_active.saturating_sub(1);
             match result {
                 CoverFetchResult::Found { game_id, title, path, notify } => {
                     if let Some(game) = self.library.get_mut(&game_id) {
@@ -864,6 +993,9 @@ impl App {
                 }
             }
         }
+        // Hueco libre por lo que acaba de terminar (o por lo recien encolado
+        // arriba en esta misma vuelta): lanzar lo siguiente de la cola.
+        self.pump_cover_queue();
         if cover_arrived {
             // Se guarda de inmediato: una caratula descargada no deberia
             // perderse si el shell se cierra antes del siguiente cambio en la
@@ -1009,7 +1141,7 @@ impl App {
         // normalidad (WASD/F/Tab del teclado si se colarian en la clave que
         // se esta tecleando).
         let keyboard = crate::nav::keyboard_actions(ctx);
-        if self.search_active || self.cover_key_editing {
+        if self.search_active || self.cover_key_editing || self.renaming {
             actions.extend(
                 keyboard.into_iter().filter(|a| matches!(a, NavAction::Back | NavAction::Accept | NavAction::Guide)),
             );
@@ -1105,11 +1237,20 @@ impl App {
     }
 
     fn handle_detail_action(&mut self, action: NavAction, ctx: &egui::Context) {
+        if self.renaming {
+            match action {
+                NavAction::Accept => self.confirm_rename(),
+                NavAction::Back => self.cancel_rename(),
+                _ => {}
+            }
+            return;
+        }
         match action {
             NavAction::Accept => self.launch_focused(ctx),
             NavAction::Back => self.pop_view(),
             NavAction::Favorite => self.toggle_favorite(),
             NavAction::Context => self.remove_focused(),
+            NavAction::TabPrev => self.begin_rename(),
             NavAction::Search => {
                 if let Some(game) = self.focused_game() {
                     let (id, title) = (game.id.clone(), game.title.clone());
@@ -1269,6 +1410,7 @@ impl App {
             NavAction::Favorite => self.test_cover_key(),
             NavAction::TabPrev => self.cover_key_clear(),
             NavAction::TabNext => self.fetch_all_missing_covers(),
+            NavAction::Search => self.cancel_cover_setup(),
             NavAction::Back => {
                 if self.cover_key_editing {
                     self.cover_key_editing = false;
@@ -1346,12 +1488,27 @@ impl eframe::App for App {
 
         // Pulso del bucle: lo que marca la diferencia entre un shell que se
         // olvida en segundo plano y uno que se come un nucleo sin hacer nada.
-        let fps = match self.poll_mode() {
+        let mode = self.poll_mode();
+        let fps = match mode {
             PollMode::InGame => self.config.general.background_fps,
             PollMode::Idle => self.config.general.idle_fps,
             PollMode::Active => self.config.general.active_fps,
         };
-        ctx.request_repaint_after(Duration::from_secs_f32(1.0 / fps.max(1) as f32));
+        let mut interval = Duration::from_secs_f32(1.0 / fps.max(1) as f32);
+        if mode == PollMode::InGame {
+            // XInput reporta el estado en el instante de la lectura, no una
+            // cola de eventos: con `background_fps` bajo (1 Hz de serie) el
+            // boton Guia se puede pulsar y soltar entero entre dos sondeos y
+            // no queda ni rastro del flanco, se pierde la pulsacion entera,
+            // no solo se retrasa. Se acota el intervalo al que ya calculaba
+            // `InputHub::poll_interval` para este modo (10 Hz) para que el
+            // mando se siga sondeando a un ritmo fiable aunque el repintado
+            // en si se pida mas lento; la ventana esta minimizada
+            // en este modo, asi que el coste real es sondear un mando, no
+            // dibujar un frame completo.
+            interval = interval.min(self.input.poll_interval(PollMode::InGame));
+        }
+        ctx.request_repaint_after(interval);
     }
 
     fn on_exit(&mut self) {

@@ -5,6 +5,8 @@
 //! pesa es otra cosa. Aqui se mide lo que hay corriendo **ahora**, se aparta
 //! todo lo protegido y se degrada lo mas pesado que quede.
 
+use std::collections::HashMap;
+
 use gm_core::config::Power;
 
 use crate::protect::{protection_for, Protection};
@@ -48,10 +50,34 @@ impl Selection {
     }
 }
 
+/// Sube por la cadena de padres de `pid` buscando `game_pid`. Protege no solo
+/// el proceso exacto que se lanzo, sino tambien a sus hijos: un lanzador
+/// intermedio (Steam, un `.bat`, un instalador que arranca el juego real como
+/// proceso hijo) es la norma, no la excepcion, y sin esto el juego de verdad
+/// se quedaba fuera de la proteccion y podia acabar el mismo en el ranking de
+/// "mas pesado".
+///
+/// Limitada a una profundidad corta: una cadena de padres corrupta o con un
+/// PID reciclado (Windows los reutiliza) no debe poder colgar esto en un
+/// bucle. 16 saltos es mas que de sobra para cualquier arbol de procesos real.
+fn is_game_or_descendant(pid: u32, game_pid: u32, parents: &HashMap<u32, u32>) -> bool {
+    let mut current = pid;
+    for _ in 0..16 {
+        if current == game_pid {
+            return true;
+        }
+        match parents.get(&current) {
+            Some(&parent) if parent != 0 && parent != current => current = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Elige los procesos a degradar.
 ///
-/// `game_pid` se protege explicitamente: seria de chiste que el modo juego le
-/// bajase la prioridad al juego.
+/// `game_pid` se protege explicitamente, junto con toda su descendencia:
+/// seria de chiste que el modo juego le bajase la prioridad al juego.
 pub fn select_throttle_targets(
     processes: &[ProcessUsage],
     config: &Power,
@@ -61,6 +87,7 @@ pub fn select_throttle_targets(
     let mut selection = Selection::default();
     let mut ranked: Vec<&ProcessUsage> = Vec::new();
     let threshold = config.auto_throttle_min_mb * 1024 * 1024;
+    let parents: HashMap<u32, u32> = processes.iter().map(|p| (p.pid, p.parent_pid)).collect();
 
     for process in processes {
         if process.pid == 0 {
@@ -70,7 +97,7 @@ pub fn select_throttle_targets(
             selection.note_untouched(&process.name, &Protection::Own("es el propio modo juego".into()));
             continue;
         }
-        if Some(process.pid) == game_pid {
+        if game_pid.is_some_and(|game_pid| is_game_or_descendant(process.pid, game_pid, &parents)) {
             selection.note_untouched(&process.name, &Protection::Own("es el juego en marcha".into()));
             continue;
         }
@@ -116,7 +143,17 @@ mod tests {
     use super::*;
 
     fn process(pid: u32, name: &str, mb: u64) -> ProcessUsage {
-        ProcessUsage { pid, name: name.to_string(), working_set: mb * 1024 * 1024, private_bytes: mb * 1024 * 1024 }
+        child_process(pid, 0, name, mb)
+    }
+
+    fn child_process(pid: u32, parent_pid: u32, name: &str, mb: u64) -> ProcessUsage {
+        ProcessUsage {
+            pid,
+            parent_pid,
+            name: name.to_string(),
+            working_set: mb * 1024 * 1024,
+            private_bytes: mb * 1024 * 1024,
+        }
     }
 
     fn config() -> Power {
@@ -206,6 +243,49 @@ mod tests {
         let selection = select_throttle_targets(&processes, &config, 1, None);
         let names: Vec<&str> = selection.targets.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["manias"]);
+    }
+
+    #[test]
+    fn un_proceso_hijo_del_juego_tambien_queda_protegido() {
+        // 42 = lanzador (el PID que se guardo al arrancar), 43 = el juego de
+        // verdad, que el lanzador arranco como hijo suyo. Patron comun con
+        // Steam, instaladores o un .bat de por medio.
+        let processes = vec![
+            process(1, "gamingmode", 300),
+            process(42, "lanzador", 50),
+            child_process(43, 42, "eljuegodeverdad", 4000),
+            process(10, "otro", 500),
+        ];
+        let selection = select_throttle_targets(&processes, &config(), 1, Some(42));
+        let names: Vec<&str> = selection.targets.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["otro"], "el hijo del lanzador no debe degradarse");
+        assert!(selection.untouched.iter().any(|u| u.name == "eljuegodeverdad"));
+    }
+
+    #[test]
+    fn la_proteccion_de_descendencia_no_cuelga_con_una_cadena_larga() {
+        // Cadena de 20 padres, mas larga que el limite de profundidad: no
+        // debe colgarse, simplemente deja de reconocer el parentesco.
+        let mut processes = vec![process(1, "gamingmode", 300)];
+        for i in 0..20u32 {
+            let parent = if i == 0 { 42 } else { 100 + i - 1 };
+            processes.push(child_process(100 + i, parent, "eslabon", 10));
+        }
+        let selection = select_throttle_targets(&processes, &config(), 1, Some(42));
+        // No debe entrar en panico ni bucle infinito; el resultado exacto
+        // (protegido o no segun la profundidad) es secundario.
+        assert!(selection.targets.len() + selection.untouched.len() > 0);
+    }
+
+    #[test]
+    fn una_cadena_de_padres_con_ciclo_no_cuelga() {
+        // Dos procesos que se apuntan mutuamente como padre: un dato corrupto
+        // o una coincidencia de PIDs reciclados, no algo que deba darse en un
+        // arbol de procesos real, pero tampoco debe colgar la busqueda.
+        let processes =
+            vec![process(1, "gamingmode", 300), child_process(10, 11, "a", 500), child_process(11, 10, "b", 500)];
+        let selection = select_throttle_targets(&processes, &config(), 1, Some(999));
+        assert_eq!(selection.targets.len(), 2, "sin relacion con el juego, se degradan como cualquier otro");
     }
 
     #[test]

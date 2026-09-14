@@ -206,7 +206,7 @@ pub fn list_processes() -> Result<Vec<ProcInfo>> {
                 let len = entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(entry.szExeFile.len());
                 let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
                 let name = name.strip_suffix(".exe").unwrap_or(&name).to_string();
-                processes.push(ProcInfo { pid: entry.th32ProcessID, name });
+                processes.push(ProcInfo { pid: entry.th32ProcessID, name, parent_pid: entry.th32ParentProcessID });
                 if Process32NextW(snapshot, &mut entry).is_err() {
                     break;
                 }
@@ -317,7 +317,13 @@ pub fn sample_processes() -> Result<Vec<ProcessUsage>> {
             })
             .unwrap_or((0, 0));
 
-        usage.push(ProcessUsage { pid: process.pid, name: process.name, working_set, private_bytes });
+        usage.push(ProcessUsage {
+            pid: process.pid,
+            name: process.name,
+            parent_pid: process.parent_pid,
+            working_set,
+            private_bytes,
+        });
     }
     Ok(usage)
 }

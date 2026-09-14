@@ -19,10 +19,14 @@ impl App {
         let mut remove = false;
         let mut favorite = false;
         let mut fetch_cover = false;
+        let mut rename = false;
+        let mut confirm_rename = false;
+        let mut cancel_rename = false;
 
         let source = self.input_source;
         let has_key = self.config.covers.steamgrid_api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
-        let texture = self.covers.get(ui.ctx(), &game.id, game.cover.as_deref());
+        let texture = self.covers.get(&game.id, game.cover.as_deref());
+        let renaming = self.renaming;
 
         ui.horizontal_top(|ui| {
             let (rect, _) = ui.allocate_exact_size(CARD * 1.3, Sense::hover());
@@ -30,7 +34,20 @@ impl App {
 
             ui.add_space(28.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new(&game.title).size(40.0).strong());
+                if renaming {
+                    ui.horizontal(|ui| {
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.rename_draft)
+                                .desired_width(420.0)
+                                .font(egui::FontId::proportional(28.0)),
+                        );
+                        if !response.has_focus() {
+                            response.request_focus();
+                        }
+                    });
+                } else {
+                    ui.label(RichText::new(&game.title).size(40.0).strong());
+                }
                 ui.add_space(6.0);
                 let kind = match &game.launch {
                     gm_core::Launch::Executable { .. } => "Ejecutable".to_string(),
@@ -60,51 +77,79 @@ impl App {
                 }
 
                 ui.add_space(26.0);
-                ui.horizontal(|ui| {
-                    if action_button(
-                        ui,
-                        &format!("▶  Jugar  ({})", button_label(source, NavAction::Accept)),
-                        theme::pal().accent,
-                    ) {
-                        launch = true;
-                    }
-                    ui.add_space(12.0);
-                    if action_button(
-                        ui,
-                        &format!("★  Favorito  ({})", button_label(source, NavAction::Favorite)),
-                        theme::pal().surface_alt,
-                    ) {
-                        favorite = true;
-                    }
-                    ui.add_space(12.0);
-                    if action_button(
-                        ui,
-                        &format!("✕  Quitar  ({})", button_label(source, NavAction::Context)),
-                        theme::pal().surface_alt,
-                    ) {
-                        remove = true;
-                    }
-                    if has_key {
-                        ui.add_space(12.0);
-                        let label = if game.cover.is_some() { "Volver a buscar" } else { "Buscar caratula" };
+                if renaming {
+                    ui.horizontal(|ui| {
                         if action_button(
                             ui,
-                            &format!("🖼  {label}  ({})", button_label(source, NavAction::Search)),
+                            &format!("✔  Guardar titulo  ({})", button_label(source, NavAction::Accept)),
+                            theme::pal().accent,
+                        ) {
+                            confirm_rename = true;
+                        }
+                        ui.add_space(12.0);
+                        if action_button(
+                            ui,
+                            &format!("✕  Cancelar  ({})", button_label(source, NavAction::Back)),
                             theme::pal().surface_alt,
                         ) {
-                            fetch_cover = true;
+                            cancel_rename = true;
                         }
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        if action_button(
+                            ui,
+                            &format!("▶  Jugar  ({})", button_label(source, NavAction::Accept)),
+                            theme::pal().accent,
+                        ) {
+                            launch = true;
+                        }
+                        ui.add_space(12.0);
+                        if action_button(
+                            ui,
+                            &format!("★  Favorito  ({})", button_label(source, NavAction::Favorite)),
+                            theme::pal().surface_alt,
+                        ) {
+                            favorite = true;
+                        }
+                        ui.add_space(12.0);
+                        if action_button(
+                            ui,
+                            &format!("✕  Quitar  ({})", button_label(source, NavAction::Context)),
+                            theme::pal().surface_alt,
+                        ) {
+                            remove = true;
+                        }
+                        ui.add_space(12.0);
+                        if action_button(
+                            ui,
+                            &format!("✎  Renombrar  ({})", button_label(source, NavAction::TabPrev)),
+                            theme::pal().surface_alt,
+                        ) {
+                            rename = true;
+                        }
+                        if has_key {
+                            ui.add_space(12.0);
+                            let label = if game.cover.is_some() { "Volver a buscar" } else { "Buscar caratula" };
+                            if action_button(
+                                ui,
+                                &format!("🖼  {label}  ({})", button_label(source, NavAction::Search)),
+                                theme::pal().surface_alt,
+                            ) {
+                                fetch_cover = true;
+                            }
+                        }
+                    });
+                    if !has_key {
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new(
+                                "Configura una clave gratuita en Ajustes → Caratulas automaticas para buscar caratulas.",
+                            )
+                            .size(14.0)
+                            .color(theme::pal().text_dim),
+                        );
                     }
-                });
-                if !has_key {
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new(
-                            "Configura una clave gratuita en Ajustes → Caratulas automaticas para buscar caratulas.",
-                        )
-                        .size(14.0)
-                        .color(theme::pal().text_dim),
-                    );
                 }
             });
         });
@@ -122,6 +167,15 @@ impl App {
         if fetch_cover {
             let (id, title) = (game.id.clone(), game.title.clone());
             self.fetch_cover_now(&id, &title);
+        }
+        if rename {
+            self.begin_rename();
+        }
+        if confirm_rename {
+            self.confirm_rename();
+        }
+        if cancel_rename {
+            self.cancel_rename();
         }
     }
 }

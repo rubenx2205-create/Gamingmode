@@ -120,7 +120,7 @@ mod tests {
     }
 
     fn process(pid: u32, name: &str, mb: u64) -> ProcessUsage {
-        ProcessUsage { pid, name: name.to_string(), working_set: mb * 1024 * 1024, private_bytes: 0 }
+        ProcessUsage { pid, parent_pid: 0, name: name.to_string(), working_set: mb * 1024 * 1024, private_bytes: 0 }
     }
 
     #[test]

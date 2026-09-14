@@ -195,6 +195,16 @@ impl Library {
         }
     }
 
+    /// Cambia el titulo de un juego ya anadido, recalculando la clave de
+    /// busqueda a la vez: no deben quedar nunca desincronizados, o la
+    /// biblioteca dejaria de encontrar por texto un juego recien renombrado.
+    pub fn rename(&mut self, id: &str, title: impl Into<String>) -> bool {
+        let Some(game) = self.get_mut(id) else { return false };
+        game.title = title.into();
+        game.search_key = util::normalize(&game.title);
+        true
+    }
+
     pub fn collections(&self) -> Vec<String> {
         let mut seen: Vec<String> = Vec::new();
         for game in &self.games {
@@ -271,6 +281,23 @@ mod tests {
         assert_eq!(lib.view("roja pokemon", None, Sort::Title, false).len(), 1);
         assert_eq!(lib.view("zelda", None, Sort::Title, false).len(), 0);
         assert_eq!(lib.view("", None, Sort::Title, false).len(), 2);
+    }
+
+    #[test]
+    fn renombrar_actualiza_titulo_y_clave_de_busqueda() {
+        let mut lib = Library::default();
+        lib.add(exe("C:/a.exe", "Mi Juego v1 2 3 Win64"));
+        let id = lib.games[0].id.clone();
+        assert!(lib.rename(&id, "Pokemon Edicion Roja"));
+        assert_eq!(lib.games[0].title, "Pokemon Edicion Roja");
+        assert_eq!(lib.view("pokemon roja", None, Sort::Title, false).len(), 1, "la busqueda ya usa el nuevo titulo");
+        assert_eq!(lib.view("mi juego", None, Sort::Title, false).len(), 0, "el titulo viejo ya no encuentra nada");
+    }
+
+    #[test]
+    fn renombrar_algo_que_no_existe_no_hace_nada() {
+        let mut lib = Library::default();
+        assert!(!lib.rename("no-existe", "Nuevo"));
     }
 
     #[test]

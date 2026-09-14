@@ -1,6 +1,13 @@
 //! Rejilla de la biblioteca.
+//!
+//! Se dibuja con `ScrollArea::show_viewport` en vez de `show`: con una
+//! biblioteca de cientos o miles de juegos, dibujar TODAS las tarjetas en
+//! cada frame (aunque la mayoria caigan fuera de la pantalla) decodificaria
+//! sus caratulas y encolaria su busqueda en SteamGridDB de golpe. Solo se
+//! construyen las filas que de verdad estan a la vista, mas un margen de una
+//! fila arriba y abajo para que el scroll rapido no ensene un hueco en blanco.
 
-use egui::{Align, Margin, RichText, Sense};
+use egui::{Align, Margin, Rect, RichText, Sense, UiBuilder};
 
 use super::{cover_tile, empty_state, focus_changed};
 use crate::app::{App, View};
@@ -21,8 +28,8 @@ impl App {
             return;
         }
 
-        let spacing = ui.spacing().item_spacing.x;
-        let columns = crate::nav::columns_for(ui.available_width(), CARD.x, spacing);
+        let spacing = ui.spacing().item_spacing;
+        let columns = crate::nav::columns_for(ui.available_width(), CARD.x, spacing.x).max(1);
         self.columns = columns;
 
         // Referencias a campos sueltos: asi el cierre no toma prestado `self`
@@ -37,11 +44,43 @@ impl App {
         let mut to_fetch: Vec<(String, String)> = Vec::new();
         let scroll_to_focus = focus_changed(ui.ctx(), "foco_biblioteca", focus);
 
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for (row_index, row) in indices.chunks(columns).enumerate() {
-                ui.horizontal(|ui| {
-                    for (column_index, game_index) in row.iter().enumerate() {
+        let total_rows = indices.len().div_ceil(columns);
+        let row_height = CARD.y + spacing.y;
+
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
+            ui.set_height((row_height * total_rows as f32 - spacing.y).max(0.0));
+            // `max_rect()` dentro de `show_viewport` es el espacio de
+            // coordenadas del contenido completo, no solo la parte visible:
+            // sirve tanto para calcular que filas dibujar como para
+            // desplazarse a una fila que ni siquiera se ha llegado a
+            // construir todavia (ver mas abajo).
+            let content_top = ui.max_rect().top();
+            let content_left = ui.max_rect().left();
+            let content_width = ui.max_rect().width();
+
+            if scroll_to_focus {
+                let focused_row = (focus / columns) as f32;
+                let target = Rect::from_min_size(
+                    egui::pos2(content_left, content_top + focused_row * row_height),
+                    egui::vec2(content_width, CARD.y),
+                );
+                ui.scroll_to_rect(target.expand(24.0), Some(Align::Center));
+            }
+
+            let mut min_row = (viewport.min.y / row_height).floor().max(0.0) as usize;
+            let mut max_row = (viewport.max.y / row_height).ceil() as usize + 1;
+            min_row = min_row.saturating_sub(1);
+            max_row = (max_row + 1).min(total_rows);
+
+            for row_index in min_row..max_row {
+                let row_top = content_top + row_index as f32 * row_height;
+                let row_rect =
+                    Rect::from_min_size(egui::pos2(content_left, row_top), egui::vec2(content_width, CARD.y));
+
+                ui.new_child(UiBuilder::new().max_rect(row_rect)).horizontal(|ui| {
+                    for column_index in 0..columns {
                         let position = row_index * columns + column_index;
+                        let Some(game_index) = indices.get(position) else { break };
                         let Some(game) = library.games.get(*game_index) else { continue };
                         let (rect, response) = ui.allocate_exact_size(CARD, Sense::click());
                         let focused = position == focus;
@@ -54,7 +93,7 @@ impl App {
                             subtitle = format!("⚠ no encontrado · {subtitle}");
                         }
 
-                        let texture = covers.get(ui.ctx(), &game.id, game.cover.as_deref());
+                        let texture = covers.get(&game.id, game.cover.as_deref());
                         if texture.is_none() && game.cover.is_none() {
                             to_fetch.push((game.id.clone(), game.title.clone()));
                         }
@@ -63,18 +102,14 @@ impl App {
                         if response.clicked() {
                             clicked = Some(position);
                         }
-                        if focused && scroll_to_focus {
-                            ui.scroll_to_rect(rect.expand(24.0), Some(Align::Center));
-                        }
                     }
                 });
-                ui.add_space(6.0);
             }
-            ui.add_space(20.0);
         });
 
-        // Solo se piden las caratulas de lo que de verdad esta en pantalla:
-        // el propio bucle de dibujado ya acota la lista a una pagina.
+        // Solo se piden las caratulas de lo que de verdad esta en pantalla (mas
+        // el margen de una fila): la virtualizacion de arriba ya acota esto a
+        // un puñado de juegos, no a la biblioteca entera.
         for (game_id, title) in to_fetch {
             self.maybe_fetch_cover(&game_id, &title);
         }

@@ -11,6 +11,8 @@ pub struct ProcInfo {
     pub pid: u32,
     /// Nombre del ejecutable sin extension.
     pub name: String,
+    /// PID del proceso que lo lanzo. 0 si no se pudo determinar.
+    pub parent_pid: u32,
 }
 
 /// Consumo de un proceso en un instante dado.
@@ -18,6 +20,10 @@ pub struct ProcInfo {
 pub struct ProcessUsage {
     pub pid: u32,
     pub name: String,
+    /// PID del proceso que lo lanzo. 0 si no se pudo determinar. Sirve para
+    /// reconocer procesos hijos del juego (un lanzador que arranca el
+    /// ejecutable real como hijo suyo, muy comun) y no degradarlos por error.
+    pub parent_pid: u32,
     /// RAM fisica que ocupa ahora mismo.
     pub working_set: u64,
     /// Memoria comprometida (incluye lo paginado a disco).

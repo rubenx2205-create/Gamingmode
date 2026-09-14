@@ -1,49 +1,148 @@
 //! Carga de caratulas reales como textura de egui.
 //!
-//! Las imagenes ya estan en disco (las guarda `gm_catalog::steamgrid` en un
-//! hilo aparte); este modulo solo decodifica y sube a la GPU, con un cache
-//! para no repetir el trabajo en cada frame. Ni una linea de aqui toca la red.
+//! Decodificar y redimensionar una imagen de varios cientos de KB tarda del
+//! orden de milisegundos: poco para una sola, pero bastante para notarse en
+//! el hilo de dibujado si la biblioteca tiene cientos de juegos y todos
+//! entran en pantalla a la vez. Aqui se hace en hilos aparte, acotados en
+//! numero, y solo el resultado ya decodificado -unos pocos cientos de KB de
+//! RGBA a resolucion de tarjeta, no los megabytes originales- cruza de vuelta
+//! al hilo principal para subirse a la GPU con `Context::load_texture`.
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use egui::{ColorImage, TextureHandle, TextureOptions};
 
-#[derive(Default)]
+/// Lado mas largo al que se redimensiona cualquier caratula antes de subirla
+/// a la GPU. Una tarjeta se dibuja a 190x268 puntos; 512 px de lado cubre de
+/// sobra incluso con la escala de interfaz al maximo (1.5x) mas una pantalla
+/// de alta densidad, sin arrastrar los ~600x900 (2 MB sin comprimir) que
+/// entrega SteamGridDB.
+const MAX_SIDE: u32 = 512;
+
+/// Techo de texturas decodificadas a la vez. Por encima de eso se desaloja la
+/// que lleve mas tiempo sin pedirse: una biblioteca de miles de juegos no
+/// debe poder comerse VRAM sin limite.
+const MAX_CACHED: usize = 200;
+
+/// Cuantas decodificaciones corren a la vez. Acotado por la misma razon que
+/// las descargas (`gm_catalog::download::Downloader`): abrir un hilo por
+/// caratula de golpe al entrar en una biblioteca grande no decodifica nada
+/// mas rapido, solo satura el equipo un instante.
+const MAX_CONCURRENT_DECODES: usize = 4;
+
+struct CachedEntry {
+    texture: Option<TextureHandle>,
+    /// Marca de uso para el LRU; se actualiza cada vez que se pide.
+    last_used: u64,
+}
+
 pub struct CoverTextures {
-    // `None` cacheado significa "se intento y no se pudo decodificar": evita
-    // reintentar la lectura de un fichero corrupto en cada frame.
-    cache: HashMap<String, Option<TextureHandle>>,
+    cache: HashMap<String, CachedEntry>,
+    clock: u64,
+    /// Encolado o decodificandose ahora mismo: evita encolar dos veces la
+    /// misma caratula mientras la primera peticion sigue en marcha.
+    in_flight: HashSet<String>,
+    decoding: usize,
+    queue: VecDeque<(String, PathBuf)>,
+    tx: Sender<(String, Option<ColorImage>)>,
+    rx: Receiver<(String, Option<ColorImage>)>,
+}
+
+impl Default for CoverTextures {
+    fn default() -> Self {
+        let (tx, rx) = mpsc::channel();
+        Self { cache: HashMap::new(), clock: 0, in_flight: HashSet::new(), decoding: 0, queue: VecDeque::new(), tx, rx }
+    }
 }
 
 impl CoverTextures {
-    /// Textura de la caratula de `game_id`, decodificandola la primera vez.
-    /// `None` si no hay ruta todavia o si el fichero no se pudo leer.
-    pub fn get(&mut self, ctx: &egui::Context, game_id: &str, path: Option<&Path>) -> Option<TextureHandle> {
+    /// Textura de la caratula de `game_id`, si ya esta decodificada. Si no lo
+    /// esta todavia, encola la decodificacion (si no lo estaba ya) y devuelve
+    /// `None` por ahora: la tarjeta se dibuja con la caratula generada
+    /// mientras tanto, sin bloquear el frame actual a esperar un disco lento
+    /// o una imagen grande.
+    pub fn get(&mut self, game_id: &str, path: Option<&Path>) -> Option<TextureHandle> {
         let path = path?;
-        if let Some(cached) = self.cache.get(game_id) {
-            return cached.clone();
+        self.clock += 1;
+        if let Some(entry) = self.cache.get_mut(game_id) {
+            entry.last_used = self.clock;
+            return entry.texture.clone();
         }
-        let texture = load(ctx, game_id, path);
-        if texture.is_none() {
-            log::warn!("no se pudo decodificar la caratula de '{game_id}' ({})", path.display());
+        if self.in_flight.insert(game_id.to_string()) {
+            self.queue.push_back((game_id.to_string(), path.to_path_buf()));
         }
-        self.cache.insert(game_id.to_string(), texture.clone());
-        texture
+        None
     }
 
-    /// Se llama cuando una descarga acaba de reemplazar la caratula: la
-    /// proxima vez que se pida se decodifica de nuevo en vez de devolver lo
-    /// que hubiera en cache (que podria ser `None` de un intento anterior).
+    /// Se llama cuando una descarga acaba de reemplazar la caratula: fuera de
+    /// la cache y de la cola, para que la proxima peticion la decodifique de
+    /// nuevo en vez de devolver lo que hubiera (que podria ser un `None` de
+    /// un intento anterior, o la imagen vieja).
     pub fn invalidate(&mut self, game_id: &str) {
         self.cache.remove(game_id);
+        self.in_flight.remove(game_id);
+        self.queue.retain(|(id, _)| id != game_id);
+    }
+
+    /// Trabajo de fondo: se llama una vez por frame. Lanza decodificaciones
+    /// pendientes hasta el limite de concurrencia y recoge las que ya han
+    /// terminado, subiendolas a la GPU aqui, en el hilo de dibujado, que es
+    /// el unico sitio donde `Context::load_texture` es valido.
+    pub fn pump(&mut self, ctx: &egui::Context) {
+        while self.decoding < MAX_CONCURRENT_DECODES {
+            let Some((game_id, path)) = self.queue.pop_front() else { break };
+            self.decoding += 1;
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let decoded = decode(&path);
+                let _ = tx.send((game_id, decoded));
+            });
+        }
+
+        let mut arrived = false;
+        while let Ok((game_id, decoded)) = self.rx.try_recv() {
+            arrived = true;
+            self.decoding = self.decoding.saturating_sub(1);
+            self.in_flight.remove(&game_id);
+            if decoded.is_none() {
+                log::warn!("no se pudo decodificar la caratula de '{game_id}'");
+            }
+            let texture =
+                decoded.map(|image| ctx.load_texture(format!("caratula-{game_id}"), image, TextureOptions::LINEAR));
+            self.clock += 1;
+            self.cache.insert(game_id, CachedEntry { texture, last_used: self.clock });
+        }
+
+        if arrived {
+            self.evict_over_budget();
+        }
+    }
+
+    fn evict_over_budget(&mut self) {
+        while self.cache.len() > MAX_CACHED {
+            let Some(oldest) = self.cache.iter().min_by_key(|(_, entry)| entry.last_used).map(|(id, _)| id.clone())
+            else {
+                break;
+            };
+            self.cache.remove(&oldest);
+        }
     }
 }
 
-fn load(ctx: &egui::Context, game_id: &str, path: &Path) -> Option<TextureHandle> {
+/// Decodifica y redimensiona, pensada para correr en un hilo aparte. `None`
+/// si el fichero no se pudo leer o no era una imagen valida; se cachea igual
+/// (como `None`) para no reintentar un fichero corrupto en cada frame.
+fn decode(path: &Path) -> Option<ColorImage> {
     let bytes = std::fs::read(path).ok()?;
-    let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
-    let (width, height) = image.dimensions();
-    let color_image = ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &image);
-    Some(ctx.load_texture(format!("caratula-{game_id}"), color_image, TextureOptions::LINEAR))
+    let image = image::load_from_memory(&bytes).ok()?;
+    let image = if image.width() > MAX_SIDE || image.height() > MAX_SIDE {
+        image.resize(MAX_SIDE, MAX_SIDE, image::imageops::FilterType::Triangle)
+    } else {
+        image
+    };
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some(ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba))
 }

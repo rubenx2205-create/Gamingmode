@@ -121,12 +121,16 @@ impl App {
                 (NavAction::Search, "Buscar"),
                 (NavAction::Menu, "Menu"),
             ],
+            View::GameDetail if self.renaming => {
+                &[(NavAction::Accept, "Guardar titulo"), (NavAction::Back, "Cancelar")]
+            }
             View::GameDetail => &[
                 (NavAction::Accept, "Jugar"),
                 (NavAction::Back, "Volver"),
                 (NavAction::Context, "Quitar"),
                 (NavAction::Favorite, "Favorito"),
                 (NavAction::Search, "Buscar caratula"),
+                (NavAction::TabPrev, "Renombrar"),
             ],
             View::Catalog => &[
                 (NavAction::Accept, "Abrir"),
@@ -163,6 +167,7 @@ impl App {
                 (NavAction::Favorite, "Probar clave"),
                 (NavAction::TabPrev, "Borrar"),
                 (NavAction::TabNext, "Descargar las que faltan"),
+                (NavAction::Search, "Cancelar sin guardar"),
                 (NavAction::Back, "Guardar y volver"),
             ],
             View::Quick => &[(NavAction::Accept, "Elegir"), (NavAction::Back, "Cerrar")],
