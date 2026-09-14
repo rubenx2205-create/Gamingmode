@@ -29,8 +29,6 @@ impl App {
         }
 
         let spacing = ui.spacing().item_spacing;
-        let columns = crate::nav::columns_for(ui.available_width(), CARD.x, spacing.x).max(1);
-        self.columns = columns;
 
         // Referencias a campos sueltos: asi el cierre no toma prestado `self`
         // entero y se puede seguir dibujando sin pelearse con el prestamo.
@@ -43,12 +41,11 @@ impl App {
         let mut clicked: Option<usize> = None;
         let mut to_fetch: Vec<(String, String)> = Vec::new();
         let scroll_to_focus = focus_changed(ui.ctx(), "foco_biblioteca", focus);
-
-        let total_rows = indices.len().div_ceil(columns);
-        let row_height = CARD.y + spacing.y;
+        // Se recalcula dentro del ScrollArea (ver mas abajo) y se vuelca a
+        // `self.columns` al salir.
+        let mut columns_used = 1usize;
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
-            ui.set_height((row_height * total_rows as f32 - spacing.y).max(0.0));
             // `max_rect()` dentro de `show_viewport` es el espacio de
             // coordenadas del contenido completo, no solo la parte visible:
             // sirve tanto para calcular que filas dibujar como para
@@ -57,6 +54,17 @@ impl App {
             let content_top = ui.max_rect().top();
             let content_left = ui.max_rect().left();
             let content_width = ui.max_rect().width();
+
+            // Las columnas se calculan aqui dentro, con el ancho real del
+            // contenido, no con `ui.available_width()` de fuera del
+            // ScrollArea: ese ancho es el del panel entero e ignora la barra
+            // de desplazamiento, asi que en cuanto la barra aparece la
+            // ultima columna de cada fila queda cortada por fuera.
+            let columns = crate::nav::columns_for(content_width, CARD.x, spacing.x).max(1);
+            columns_used = columns;
+            let total_rows = indices.len().div_ceil(columns);
+            let row_height = CARD.y + spacing.y;
+            ui.set_height((row_height * total_rows as f32 - spacing.y).max(0.0));
 
             if scroll_to_focus {
                 let focused_row = (focus / columns) as f32;
@@ -106,6 +114,8 @@ impl App {
                 });
             }
         });
+
+        self.columns = columns_used;
 
         // Solo se piden las caratulas de lo que de verdad esta en pantalla (mas
         // el margen de una fila): la virtualizacion de arriba ya acota esto a

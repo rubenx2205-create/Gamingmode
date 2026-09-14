@@ -121,7 +121,16 @@ fn keyboard_label(action: NavAction) -> &'static str {
 ///
 /// La auto-repeticion del teclado la da el sistema operativo, asi que aqui no
 /// hay que replicar el temporizador del mando.
-pub fn keyboard_actions(ctx: &egui::Context) -> Vec<NavAction> {
+///
+/// `text_editing` indica si hay un campo de texto con el foco (buscador,
+/// renombrado, clave de SteamGridDB...). egui 0.29 no "consume" las teclas
+/// aunque el widget de texto las use: `Space` y `Backspace` seguirian
+/// disparando `Accept`/`Back` a la vez que escriben un espacio o borran un
+/// caracter. Por eso, mientras se esta escribiendo, solo se traducen las
+/// teclas que no forman parte de ningun texto (Escape, Enter, F12): el resto
+/// de combinaciones (WASD, Tab, F, Space, Backspace...) se dejan para que las
+/// use el campo de texto sin que tambien signifiquen algo de navegacion.
+pub fn keyboard_actions(ctx: &egui::Context, text_editing: bool) -> Vec<NavAction> {
     use egui::Key;
 
     const BINDINGS: &[(Key, NavAction)] = &[
@@ -148,9 +157,14 @@ pub fn keyboard_actions(ctx: &egui::Context) -> Vec<NavAction> {
         // accion de navegacion.
     ];
 
+    const TEXT_EDITING_BINDINGS: &[(Key, NavAction)] =
+        &[(Key::Escape, NavAction::Back), (Key::Enter, NavAction::Accept), (Key::F12, NavAction::Guide)];
+
+    let bindings = if text_editing { TEXT_EDITING_BINDINGS } else { BINDINGS };
+
     ctx.input(|input| {
         let mut actions = Vec::new();
-        for (key, action) in BINDINGS {
+        for (key, action) in bindings {
             if input.key_pressed(*key) {
                 // Shift+Tab retrocede de pestana.
                 if *key == egui::Key::Tab && input.modifiers.shift {
@@ -160,7 +174,9 @@ pub fn keyboard_actions(ctx: &egui::Context) -> Vec<NavAction> {
                 }
             }
         }
-        if input.key_pressed(egui::Key::Slash) || (input.modifiers.ctrl && input.key_pressed(egui::Key::F)) {
+        if !text_editing
+            && (input.key_pressed(egui::Key::Slash) || (input.modifiers.ctrl && input.key_pressed(egui::Key::F)))
+        {
             actions.push(NavAction::Search);
         }
         actions
@@ -335,5 +351,59 @@ mod tests {
     fn la_marca_del_mando_se_traduce_a_fuente_de_entrada() {
         assert_eq!(InputSource::from_pad_kind(PadKind::Xbox), InputSource::Xbox);
         assert_eq!(InputSource::from_pad_kind(PadKind::PlayStation), InputSource::PlayStation);
+    }
+
+    fn press(ctx: &egui::Context, key: egui::Key) {
+        ctx.begin_pass(egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn fuera_de_edicion_de_texto_espacio_y_borrar_navegan() {
+        let ctx = egui::Context::default();
+        press(&ctx, egui::Key::Space);
+        assert_eq!(keyboard_actions(&ctx, false), vec![NavAction::Accept]);
+
+        let ctx = egui::Context::default();
+        press(&ctx, egui::Key::Backspace);
+        assert_eq!(keyboard_actions(&ctx, false), vec![NavAction::Back]);
+    }
+
+    #[test]
+    fn editando_texto_espacio_y_borrar_no_disparan_ninguna_accion() {
+        // Sin esto, escribir un espacio en un titulo o en la busqueda
+        // dispararia Accept, y Backspace (borrar un caracter) dispararia
+        // Back: egui no "consume" estas teclas solo por haber un
+        // `TextEdit` con el foco.
+        let ctx = egui::Context::default();
+        press(&ctx, egui::Key::Space);
+        assert!(keyboard_actions(&ctx, true).is_empty());
+
+        let ctx = egui::Context::default();
+        press(&ctx, egui::Key::Backspace);
+        assert!(keyboard_actions(&ctx, true).is_empty());
+    }
+
+    #[test]
+    fn editando_texto_escape_enter_y_guia_siguen_funcionando() {
+        let ctx = egui::Context::default();
+        press(&ctx, egui::Key::Escape);
+        assert_eq!(keyboard_actions(&ctx, true), vec![NavAction::Back]);
+
+        let ctx = egui::Context::default();
+        press(&ctx, egui::Key::Enter);
+        assert_eq!(keyboard_actions(&ctx, true), vec![NavAction::Accept]);
+
+        let ctx = egui::Context::default();
+        press(&ctx, egui::Key::F12);
+        assert_eq!(keyboard_actions(&ctx, true), vec![NavAction::Guide]);
     }
 }

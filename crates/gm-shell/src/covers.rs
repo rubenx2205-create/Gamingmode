@@ -45,15 +45,70 @@ pub struct CoverTextures {
     /// misma caratula mientras la primera peticion sigue en marcha.
     in_flight: HashSet<String>,
     decoding: usize,
-    queue: VecDeque<(String, PathBuf)>,
-    tx: Sender<(String, Option<ColorImage>)>,
-    rx: Receiver<(String, Option<ColorImage>)>,
+    /// Generacion vigente de cada id, para descartar en `pump` un resultado
+    /// de una decodificacion que `invalidate` ya dejo obsoleta -si no, un
+    /// decode viejo que termina tarde podria pisar la textura nueva con la
+    /// imagen de antes, o (peor) borrar el `in_flight` de la peticion nueva
+    /// que ocupa ese mismo id ahora mismo.
+    generation: HashMap<String, u64>,
+    queue: VecDeque<(String, u64, PathBuf)>,
+    tx: Sender<DecodeResult>,
+    rx: Receiver<DecodeResult>,
+}
+
+struct DecodeResult {
+    game_id: String,
+    generation: u64,
+    image: Option<ColorImage>,
 }
 
 impl Default for CoverTextures {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { cache: HashMap::new(), clock: 0, in_flight: HashSet::new(), decoding: 0, queue: VecDeque::new(), tx, rx }
+        Self {
+            cache: HashMap::new(),
+            clock: 0,
+            in_flight: HashSet::new(),
+            decoding: 0,
+            generation: HashMap::new(),
+            queue: VecDeque::new(),
+            tx,
+            rx,
+        }
+    }
+}
+
+/// Manda el resultado al soltarse, con imagen si `finish` llego a llamarse o
+/// sin ella en caso contrario -incluido un panico dentro de `decode`, que de
+/// otro modo dejaria el hueco de concurrencia ocupado para siempre y la
+/// descarga de caratulas parada a medias sin que nada lo notara.
+struct DecodeGuard {
+    tx: Sender<DecodeResult>,
+    game_id: String,
+    generation: u64,
+    sent: bool,
+}
+
+impl DecodeGuard {
+    fn finish(mut self, image: Option<ColorImage>) {
+        self.sent = true;
+        let _ = self.tx.send(DecodeResult {
+            game_id: std::mem::take(&mut self.game_id),
+            generation: self.generation,
+            image,
+        });
+    }
+}
+
+impl Drop for DecodeGuard {
+    fn drop(&mut self) {
+        if !self.sent {
+            let _ = self.tx.send(DecodeResult {
+                game_id: std::mem::take(&mut self.game_id),
+                generation: self.generation,
+                image: None,
+            });
+        }
     }
 }
 
@@ -71,7 +126,8 @@ impl CoverTextures {
             return entry.texture.clone();
         }
         if self.in_flight.insert(game_id.to_string()) {
-            self.queue.push_back((game_id.to_string(), path.to_path_buf()));
+            let generation = self.generation.get(game_id).copied().unwrap_or(0);
+            self.queue.push_back((game_id.to_string(), generation, path.to_path_buf()));
         }
         None
     }
@@ -79,11 +135,14 @@ impl CoverTextures {
     /// Se llama cuando una descarga acaba de reemplazar la caratula: fuera de
     /// la cache y de la cola, para que la proxima peticion la decodifique de
     /// nuevo en vez de devolver lo que hubiera (que podria ser un `None` de
-    /// un intento anterior, o la imagen vieja).
+    /// un intento anterior, o la imagen vieja). Tambien sube la generacion
+    /// del id, para que un decode que ya estuviera en marcha con la imagen
+    /// vieja no pueda pisar lo que traiga la peticion nueva.
     pub fn invalidate(&mut self, game_id: &str) {
         self.cache.remove(game_id);
         self.in_flight.remove(game_id);
-        self.queue.retain(|(id, _)| id != game_id);
+        self.queue.retain(|(id, _, _)| id != game_id);
+        *self.generation.entry(game_id.to_string()).or_insert(0) += 1;
     }
 
     /// Trabajo de fondo: se llama una vez por frame. Lanza decodificaciones
@@ -92,27 +151,35 @@ impl CoverTextures {
     /// el unico sitio donde `Context::load_texture` es valido.
     pub fn pump(&mut self, ctx: &egui::Context) {
         while self.decoding < MAX_CONCURRENT_DECODES {
-            let Some((game_id, path)) = self.queue.pop_front() else { break };
+            let Some((game_id, generation, path)) = self.queue.pop_front() else { break };
             self.decoding += 1;
-            let tx = self.tx.clone();
+            let guard = DecodeGuard { tx: self.tx.clone(), game_id: game_id.clone(), generation, sent: false };
             std::thread::spawn(move || {
                 let decoded = decode(&path);
-                let _ = tx.send((game_id, decoded));
+                guard.finish(decoded);
             });
         }
 
         let mut arrived = false;
-        while let Ok((game_id, decoded)) = self.rx.try_recv() {
-            arrived = true;
+        while let Ok(result) = self.rx.try_recv() {
             self.decoding = self.decoding.saturating_sub(1);
-            self.in_flight.remove(&game_id);
-            if decoded.is_none() {
-                log::warn!("no se pudo decodificar la caratula de '{game_id}'");
+            let current_generation = self.generation.get(&result.game_id).copied().unwrap_or(0);
+            if result.generation != current_generation {
+                // Obsoleto: la caratula de este id se invalido mientras se
+                // decodificaba. No se toca ni `in_flight` ni el cache, o se
+                // pisaria el estado de la peticion nueva que ocupa ese id.
+                continue;
             }
-            let texture =
-                decoded.map(|image| ctx.load_texture(format!("caratula-{game_id}"), image, TextureOptions::LINEAR));
+            arrived = true;
+            self.in_flight.remove(&result.game_id);
+            if result.image.is_none() {
+                log::warn!("no se pudo decodificar la caratula de '{}'", result.game_id);
+            }
+            let texture = result
+                .image
+                .map(|image| ctx.load_texture(format!("caratula-{}", result.game_id), image, TextureOptions::LINEAR));
             self.clock += 1;
-            self.cache.insert(game_id, CachedEntry { texture, last_used: self.clock });
+            self.cache.insert(result.game_id, CachedEntry { texture, last_used: self.clock });
         }
 
         if arrived {

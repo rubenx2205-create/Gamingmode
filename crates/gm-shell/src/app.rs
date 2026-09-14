@@ -66,6 +66,37 @@ struct CoverRequest {
     notify: bool,
 }
 
+/// Garantiza que `spawn_cover_fetch` manda algo por el canal pase lo que
+/// pase, incluido un panico dentro de `fetch_cover`: sin esto, `cover_active`
+/// no bajaria nunca para esa peticion y, agotado el cupo de tres a la vez,
+/// las descargas de caratula se quedarian paradas para siempre sin que nada
+/// lo avisara.
+struct CoverFetchGuard {
+    tx: Sender<CoverFetchResult>,
+    title: String,
+    notify: bool,
+    sent: bool,
+}
+
+impl CoverFetchGuard {
+    fn finish(mut self, result: CoverFetchResult) {
+        self.sent = true;
+        let _ = self.tx.send(result);
+    }
+}
+
+impl Drop for CoverFetchGuard {
+    fn drop(&mut self) {
+        if !self.sent {
+            let _ = self.tx.send(CoverFetchResult::NotFound {
+                title: std::mem::take(&mut self.title),
+                error: "fallo interno al buscar la caratula".to_string(),
+                notify: self.notify,
+            });
+        }
+    }
+}
+
 /// Cuantas busquedas de caratula corren a la vez como mucho. "Descargar las
 /// que faltan" puede encolar toda la biblioteca de golpe; sin este limite
 /// serian otros tantos hilos e igual de tantas peticiones simultaneas a
@@ -325,16 +356,19 @@ impl App {
     pub fn push_view(&mut self, view: View) {
         self.stack.push(self.view);
         self.view = view;
+        self.cancel_rename();
     }
 
     pub fn pop_view(&mut self) {
         self.view = self.stack.pop().unwrap_or(View::Library);
+        self.cancel_rename();
     }
 
     /// Cambia de vista principal vaciando la pila de navegacion.
     pub fn set_root_view(&mut self, view: View) {
         self.stack.clear();
         self.view = view;
+        self.cancel_rename();
     }
 
     /// Siguiente criterio de ordenacion de la biblioteca.
@@ -435,23 +469,14 @@ impl App {
                     optimizer.set_game_pid(session.pid);
                 }
                 self.input.rumble(0.4, Duration::from_millis(180), Instant::now());
-                if session.tracked {
-                    self.toast(ToastKind::Good, format!("Lanzando {}", game.title));
-                } else {
-                    // Un atajo lo abre el sistema por su cuenta: no queda
-                    // proceso hijo al que seguirle la pista, asi que el modo
-                    // juego no puede darse cuenta solo de cuando se cierra.
-                    // Sin este aviso, alguien podria quedarse sin saber por
-                    // que la pantalla sigue minimizada (o el sistema sigue
-                    // "optimizado") mucho despues de haber cerrado el juego.
-                    self.toast(
-                        ToastKind::Info,
-                        format!(
-                            "Abriendo {} · como es un atajo, termina la sesion tu mismo desde el boton Guia cuando acabes",
-                            game.title
-                        ),
-                    );
-                }
+                self.toast(ToastKind::Good, format!("Lanzando {}", game.title));
+                // Un atajo lo abre el sistema por su cuenta: no queda proceso
+                // hijo al que seguirle la pista, asi que el modo juego no
+                // puede darse cuenta solo de cuando se cierra. Un aviso aqui
+                // no serviria de nada: sale justo antes de minimizar, asi que
+                // nadie llega a leerlo. En vez de eso, `quick.rs` deja la
+                // nota donde si se ve: en el propio panel que sirve para
+                // terminar la sesion a mano.
                 self.session = Some(session);
                 self.view = View::Library;
                 self.stack.clear();
@@ -501,11 +526,12 @@ impl App {
     /// Descarta la edicion sin tocar el titulo guardado.
     pub fn cancel_rename(&mut self) {
         self.renaming = false;
+        self.rename_draft.clear();
     }
 
     pub fn confirm_rename(&mut self) {
         let Some(game) = self.focused_game() else {
-            self.renaming = false;
+            self.cancel_rename();
             return;
         };
         let id = game.id.clone();
@@ -516,10 +542,26 @@ impl App {
         }
         if self.library.rename(&id, title.clone()) {
             self.save_library();
-            self.mark_library_dirty();
+            // Un titulo nuevo no vale como intento fallido del viejo: si el
+            // renombrado era justo para que SteamGridDB lo reconociera, la
+            // busqueda automatica tiene que poder volver a intentarlo.
+            self.cover_attempted.remove(&id);
             self.toast(ToastKind::Info, format!("Renombrado a \"{title}\""));
+            // El titulo nuevo puede cambiar el orden (si se ordena por
+            // titulo) o sacar al juego de una busqueda activa: se
+            // reconstruye la vista aqui mismo, en vez de esperar al proximo
+            // refresco perezoso, para poder reanclar el foco al id -no a la
+            // posicion vieja, que ahora podria apuntar a otro juego distinto.
+            self.library_view = self.library.view(&self.query, None, self.sort, self.favorites_only);
+            self.library_dirty = false;
+            let still_visible =
+                self.library_view.iter().position(|&index| self.library.games.get(index).is_some_and(|g| g.id == id));
+            match still_visible {
+                Some(position) => self.library_focus = position,
+                None => self.pop_view(),
+            }
         }
-        self.renaming = false;
+        self.cancel_rename();
     }
 
     pub fn save_library(&mut self) {
@@ -786,11 +828,12 @@ impl App {
         let dest_dir = gm_core::paths::covers_dir();
         let tx = self.cover_tx.clone();
         std::thread::spawn(move || {
+            let guard = CoverFetchGuard { tx: tx.clone(), title: title.clone(), notify, sent: false };
             let result = match gm_catalog::steamgrid::fetch_cover(&api_key, &title, &game_id, &dest_dir) {
                 Ok(path) => CoverFetchResult::Found { game_id, title, path, notify },
                 Err(e) => CoverFetchResult::NotFound { title, error: e.to_string(), notify },
             };
-            let _ = tx.send(result);
+            guard.finish(result);
         });
     }
 
@@ -1140,14 +1183,8 @@ impl App {
         // teclado es texto, no navegacion; el mando sigue funcionando con
         // normalidad (WASD/F/Tab del teclado si se colarian en la clave que
         // se esta tecleando).
-        let keyboard = crate::nav::keyboard_actions(ctx);
-        if self.search_active || self.cover_key_editing || self.renaming {
-            actions.extend(
-                keyboard.into_iter().filter(|a| matches!(a, NavAction::Back | NavAction::Accept | NavAction::Guide)),
-            );
-        } else {
-            actions.extend(keyboard);
-        }
+        let text_editing = self.search_active || self.cover_key_editing || self.renaming;
+        actions.extend(crate::nav::keyboard_actions(ctx, text_editing));
 
         // F11 no es una accion de navegacion: es un interruptor de ventana.
         if ctx.input(|input| input.key_pressed(egui::Key::F11)) {

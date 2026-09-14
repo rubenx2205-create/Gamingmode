@@ -118,6 +118,22 @@ impl App {
                     }
                     ui.add_space(8.0);
                 }
+
+                // Un atajo del sistema no deja proceso hijo al que seguirle
+                // la pista: el modo juego no puede darse cuenta solo de
+                // cuando se cierra, asi que hay que decirselo aqui mismo,
+                // junto al boton que sirve para hacerlo a mano.
+                if self.session.as_ref().is_some_and(|session| !session.tracked) {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(
+                            "Es un atajo del sistema: el modo juego no sabe solo cuando se cierra. \
+                             Usa \"Terminar la partida\" cuando acabes.",
+                        )
+                        .size(14.0)
+                        .color(theme::pal().text_dim),
+                    );
+                }
             });
 
             ui.add_space(30.0);
