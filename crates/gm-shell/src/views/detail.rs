@@ -1,9 +1,9 @@
 //! Ficha de un juego.
 
-use egui::{RichText, Rounding, Sense, Vec2};
+use egui::{RichText, Sense};
 use gm_input::NavAction;
 
-use super::{cover_tile, empty_state};
+use super::{action_button, cover_tile, empty_state};
 use crate::app::App;
 use crate::nav::button_label;
 use crate::theme::{self, CARD};
@@ -18,8 +18,10 @@ impl App {
         let mut launch = false;
         let mut remove = false;
         let mut favorite = false;
+        let mut fetch_cover = false;
 
         let source = self.input_source;
+        let has_key = self.config.covers.steamgrid_api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
         let texture = self.covers.get(ui.ctx(), &game.id, game.cover.as_deref());
 
         ui.horizontal_top(|ui| {
@@ -59,7 +61,7 @@ impl App {
 
                 ui.add_space(26.0);
                 ui.horizontal(|ui| {
-                    if big_button(
+                    if action_button(
                         ui,
                         &format!("▶  Jugar  ({})", button_label(source, NavAction::Accept)),
                         theme::pal().accent,
@@ -67,7 +69,7 @@ impl App {
                         launch = true;
                     }
                     ui.add_space(12.0);
-                    if big_button(
+                    if action_button(
                         ui,
                         &format!("★  Favorito  ({})", button_label(source, NavAction::Favorite)),
                         theme::pal().surface_alt,
@@ -75,14 +77,35 @@ impl App {
                         favorite = true;
                     }
                     ui.add_space(12.0);
-                    if big_button(
+                    if action_button(
                         ui,
                         &format!("✕  Quitar  ({})", button_label(source, NavAction::Context)),
                         theme::pal().surface_alt,
                     ) {
                         remove = true;
                     }
+                    if has_key {
+                        ui.add_space(12.0);
+                        let label = if game.cover.is_some() { "Volver a buscar" } else { "Buscar caratula" };
+                        if action_button(
+                            ui,
+                            &format!("🖼  {label}  ({})", button_label(source, NavAction::Search)),
+                            theme::pal().surface_alt,
+                        ) {
+                            fetch_cover = true;
+                        }
+                    }
                 });
+                if !has_key {
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(
+                            "Configura una clave gratuita en Ajustes → Caratulas automaticas para buscar caratulas.",
+                        )
+                        .size(14.0)
+                        .color(theme::pal().text_dim),
+                    );
+                }
             });
         });
 
@@ -96,6 +119,10 @@ impl App {
         if remove {
             self.remove_focused();
         }
+        if fetch_cover {
+            let (id, title) = (game.id.clone(), game.title.clone());
+            self.fetch_cover_now(&id, &title);
+        }
     }
 }
 
@@ -106,14 +133,4 @@ fn info_row(ui: &mut egui::Ui, label: &str, value: &str) {
         ui.label(RichText::new(super::ellipsize(value, 70)).size(16.0));
     });
     ui.add_space(4.0);
-}
-
-/// Boton grande y legible a distancia. El texto se pinta oscuro sobre el
-/// acento y claro sobre los tonos de fondo.
-fn big_button(ui: &mut egui::Ui, text: &str, fill: egui::Color32) -> bool {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(210.0, 54.0), Sense::click());
-    ui.painter().rect_filled(rect, Rounding::same(10.0), fill);
-    let text_color = if fill == theme::pal().accent { theme::pal().bg } else { theme::pal().text };
-    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(19.0), text_color);
-    response.clicked()
 }

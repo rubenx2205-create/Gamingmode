@@ -49,6 +49,16 @@ pub enum KeyTestState {
     Invalid(String),
 }
 
+/// Resultado de una busqueda de caratula, vuelto del hilo de fondo.
+/// `notify` marca si viene de una peticion explicita del usuario (boton
+/// "Buscar caratula" o "Descargar las que faltan"): esas avisan con un aviso
+/// en pantalla; las automaticas (al desplazar la biblioteca) se quedan
+/// calladas y solo se nota cuando la textura aparece sola.
+enum CoverFetchResult {
+    Found { game_id: String, title: String, path: PathBuf, notify: bool },
+    NotFound { title: String, error: String, notify: bool },
+}
+
 /// Para que se abrio el explorador de ficheros.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserPurpose {
@@ -154,8 +164,8 @@ pub struct App {
     /// exito o sin el: evita volver a pedirla solo porque la tarjeta ha
     /// vuelto a entrar en pantalla al desplazar la rejilla.
     cover_attempted: HashSet<String>,
-    cover_tx: Sender<(String, PathBuf)>,
-    cover_rx: Receiver<(String, PathBuf)>,
+    cover_tx: Sender<CoverFetchResult>,
+    cover_rx: Receiver<CoverFetchResult>,
 
     // Alta de la clave de SteamGridDB (pantalla dedicada, ver views/cover_setup.rs)
     /// Lo que hay escrito en el campo ahora mismo; no es la clave guardada
@@ -677,32 +687,80 @@ impl App {
         self.toast(ToastKind::Good, format!("Descargando {}", entry.name));
     }
 
-    /// Busca la caratula de un juego en SteamGridDB, en un hilo aparte.
-    ///
-    /// No hace nada sin clave configurada, y no abre ninguna ventana ni
-    /// dialogo: si funciona, la textura aparece sola en el sitio de la
-    /// generada la proxima vez que se dibuje la tarjeta, sin sacar al shell
-    /// de pantalla completa para nada.
+    /// La clave configurada, si hay alguna que no sea solo espacios.
+    fn cover_key(&self) -> Option<String> {
+        self.config.covers.steamgrid_api_key.clone().filter(|key| !key.trim().is_empty())
+    }
+
+    /// Lanza la busqueda de una caratula en un hilo aparte. No abre ninguna
+    /// ventana ni dialogo: el resultado vuelve por el canal y `pump()` lo
+    /// recoge, avisando en pantalla solo si `notify` esta activo.
+    fn spawn_cover_fetch(&self, api_key: String, game_id: String, title: String, notify: bool) {
+        let dest_dir = gm_core::paths::covers_dir();
+        let tx = self.cover_tx.clone();
+        std::thread::spawn(move || {
+            let result = match gm_catalog::steamgrid::fetch_cover(&api_key, &title, &game_id, &dest_dir) {
+                Ok(path) => CoverFetchResult::Found { game_id, title, path, notify },
+                Err(e) => CoverFetchResult::NotFound { title, error: e.to_string(), notify },
+            };
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Busca la caratula de un juego que acaba de aparecer en pantalla, sin
+    /// que el usuario haya pedido nada: silenciosa, y solo una vez por
+    /// partida mientras el shell este abierto (si falla, no se reintenta solo
+    /// por volver a desplazar la rejilla hasta esa tarjeta).
     pub fn maybe_fetch_cover(&mut self, game_id: &str, title: &str) {
         if !self.config.covers.auto_fetch || self.cover_attempted.contains(game_id) {
             return;
         }
-        let Some(api_key) = self.config.covers.steamgrid_api_key.clone() else { return };
-        if api_key.trim().is_empty() {
+        let Some(api_key) = self.cover_key() else { return };
+        self.cover_attempted.insert(game_id.to_string());
+        self.spawn_cover_fetch(api_key, game_id.to_string(), title.to_string(), false);
+    }
+
+    /// Busca (o vuelve a buscar) la caratula de un juego concreto porque el
+    /// usuario lo ha pedido -boton "Buscar caratula" de la ficha-, avisando
+    /// del resultado aunque sea un fallo: es la via para forzar un reintento
+    /// cuando la busqueda automatica no encontro nada (titulo raro sacado del
+    /// nombre del .exe, por ejemplo).
+    pub fn fetch_cover_now(&mut self, game_id: &str, title: &str) {
+        let Some(api_key) = self.cover_key() else {
+            self.toast(ToastKind::Bad, "Antes configura una clave en Ajustes → Caratulas automaticas");
+            return;
+        };
+        self.toast(ToastKind::Info, format!("Buscando caratula de \"{title}\"..."));
+        self.cover_attempted.insert(game_id.to_string());
+        self.spawn_cover_fetch(api_key, game_id.to_string(), title.to_string(), true);
+    }
+
+    /// Lanza una busqueda para cada juego de la biblioteca que todavia no
+    /// tiene caratula, de una vez. Es el boton "Descargar las que faltan" de
+    /// la pantalla de SteamGridDB: el motivo de tener la clave puesta es
+    /// justo este, no quedarse esperando a que cada juego pase por la
+    /// rejilla.
+    pub fn fetch_all_missing_covers(&mut self) {
+        let Some(api_key) = self.cover_key() else {
+            self.toast(ToastKind::Bad, "Antes configura una clave en Ajustes → Caratulas automaticas");
+            return;
+        };
+        let missing: Vec<(String, String)> = self
+            .library
+            .games
+            .iter()
+            .filter(|game| game.cover.is_none())
+            .map(|game| (game.id.clone(), game.title.clone()))
+            .collect();
+        if missing.is_empty() {
+            self.toast(ToastKind::Info, "Todos los juegos de la biblioteca ya tienen caratula");
             return;
         }
-        self.cover_attempted.insert(game_id.to_string());
-
-        let game_id = game_id.to_string();
-        let title = title.to_string();
-        let dest_dir = gm_core::paths::covers_dir();
-        let tx = self.cover_tx.clone();
-        std::thread::spawn(move || match gm_catalog::steamgrid::fetch_cover(&api_key, &title, &game_id, &dest_dir) {
-            Ok(path) => {
-                let _ = tx.send((game_id, path));
-            }
-            Err(e) => log::debug!("sin caratula para '{title}': {e}"),
-        });
+        self.toast(ToastKind::Info, format!("Buscando caratula para {} juegos...", missing.len()));
+        for (game_id, title) in missing {
+            self.cover_attempted.insert(game_id.clone());
+            self.spawn_cover_fetch(api_key.clone(), game_id, title, false);
+        }
     }
 
     /// Abre la pantalla de alta de la clave de SteamGridDB, con lo que haya
@@ -783,14 +841,27 @@ impl App {
     fn pump(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
 
-        // Caratulas de SteamGridDB que acaban de llegar.
+        // Caratulas de SteamGridDB que acaban de llegar (o de fallar).
         let mut cover_arrived = false;
-        while let Ok((game_id, path)) = self.cover_rx.try_recv() {
-            if let Some(game) = self.library.get_mut(&game_id) {
-                game.cover = Some(path);
-                self.covers.invalidate(&game_id);
-                self.mark_library_dirty();
-                cover_arrived = true;
+        while let Ok(result) = self.cover_rx.try_recv() {
+            match result {
+                CoverFetchResult::Found { game_id, title, path, notify } => {
+                    if let Some(game) = self.library.get_mut(&game_id) {
+                        game.cover = Some(path);
+                        self.covers.invalidate(&game_id);
+                        self.mark_library_dirty();
+                        cover_arrived = true;
+                    }
+                    if notify {
+                        self.toast(ToastKind::Good, format!("Caratula de \"{title}\" descargada"));
+                    }
+                }
+                CoverFetchResult::NotFound { title, error, notify } => {
+                    log::debug!("sin caratula para '{title}': {error}");
+                    if notify {
+                        self.toast(ToastKind::Bad, format!("Sin caratula para \"{title}\": {error}"));
+                    }
+                }
             }
         }
         if cover_arrived {
@@ -933,10 +1004,12 @@ impl App {
             self.input_source = crate::nav::InputSource::KeyboardMouse;
         }
 
-        // Mientras se escribe en el buscador el teclado es texto, no
-        // navegacion; el mando sigue funcionando con normalidad.
+        // Mientras se escribe en un buscador o en la clave de SteamGridDB el
+        // teclado es texto, no navegacion; el mando sigue funcionando con
+        // normalidad (WASD/F/Tab del teclado si se colarian en la clave que
+        // se esta tecleando).
         let keyboard = crate::nav::keyboard_actions(ctx);
-        if self.search_active {
+        if self.search_active || self.cover_key_editing {
             actions.extend(
                 keyboard.into_iter().filter(|a| matches!(a, NavAction::Back | NavAction::Accept | NavAction::Guide)),
             );
@@ -1037,6 +1110,12 @@ impl App {
             NavAction::Back => self.pop_view(),
             NavAction::Favorite => self.toggle_favorite(),
             NavAction::Context => self.remove_focused(),
+            NavAction::Search => {
+                if let Some(game) = self.focused_game() {
+                    let (id, title) = (game.id.clone(), game.title.clone());
+                    self.fetch_cover_now(&id, &title);
+                }
+            }
             _ => {}
         }
     }
@@ -1189,6 +1268,7 @@ impl App {
             NavAction::Context => self.cover_key_paste(),
             NavAction::Favorite => self.test_cover_key(),
             NavAction::TabPrev => self.cover_key_clear(),
+            NavAction::TabNext => self.fetch_all_missing_covers(),
             NavAction::Back => {
                 if self.cover_key_editing {
                     self.cover_key_editing = false;

@@ -5,8 +5,11 @@
 //! un fichero de texto: todo se hace desde aqui, con el mando o el teclado.
 
 use egui::{Align, Frame, Margin, RichText, Rounding};
+use gm_input::NavAction;
 
+use super::action_button;
 use crate::app::{App, KeyTestState};
+use crate::nav::button_label;
 use crate::theme;
 
 impl App {
@@ -30,6 +33,56 @@ impl App {
         self.cover_setup_field(ui);
         ui.add_space(14.0);
         self.cover_setup_status(ui);
+        ui.add_space(18.0);
+        self.cover_setup_bulk_download(ui);
+    }
+
+    /// El boton que de verdad descarga arte, no solo lo configura: mientras
+    /// no se pulse aqui (o se abra cada ficha con Buscar caratula), una clave
+    /// guardada no baja nada por si sola salvo lo que se vaya viendo en la
+    /// biblioteca al navegar.
+    fn cover_setup_bulk_download(&mut self, ui: &mut egui::Ui) {
+        let missing = self.library.games.iter().filter(|g| g.cover.is_none()).count();
+        let has_key = self.config.covers.steamgrid_api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
+
+        Frame::none().fill(theme::pal().surface).rounding(Rounding::same(10.0)).inner_margin(Margin::same(16.0)).show(
+            ui,
+            |ui| {
+                ui.label(RichText::new("Descargar ahora").size(17.0).strong());
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(if missing == 0 {
+                        "Todos los juegos de la biblioteca ya tienen caratula.".to_string()
+                    } else {
+                        format!(
+                            "{missing} juego(s) sin caratula todavia (incluidos los anadidos como .exe). \
+                             La busqueda automatica solo se dispara al pasar por la biblioteca; este \
+                             boton las busca todas de golpe, ahora mismo.",
+                        )
+                    })
+                    .size(15.0)
+                    .color(theme::pal().text_dim),
+                );
+                ui.add_space(10.0);
+
+                let source = self.input_source;
+                let label = format!("Descargar las que faltan  ({})", button_label(source, NavAction::TabNext));
+                let fill = if has_key && missing > 0 { theme::pal().accent } else { theme::pal().surface_alt };
+                if action_button(ui, &label, fill) {
+                    // El propio metodo avisa si falta la clave: pulsar sin
+                    // ella no se queda callado.
+                    self.fetch_all_missing_covers();
+                }
+                if !has_key {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new("Guarda una clave arriba antes de poder descargar nada.")
+                            .size(14.0)
+                            .color(theme::pal().warn),
+                    );
+                }
+            },
+        );
     }
 
     fn cover_setup_steps(&self, ui: &mut egui::Ui) {

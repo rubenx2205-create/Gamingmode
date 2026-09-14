@@ -126,6 +126,7 @@ impl App {
                 (NavAction::Back, "Volver"),
                 (NavAction::Context, "Quitar"),
                 (NavAction::Favorite, "Favorito"),
+                (NavAction::Search, "Buscar caratula"),
             ],
             View::Catalog => &[
                 (NavAction::Accept, "Abrir"),
@@ -161,6 +162,7 @@ impl App {
                 (NavAction::Context, "Pegar"),
                 (NavAction::Favorite, "Probar clave"),
                 (NavAction::TabPrev, "Borrar"),
+                (NavAction::TabNext, "Descargar las que faltan"),
                 (NavAction::Back, "Guardar y volver"),
             ],
             View::Quick => &[(NavAction::Accept, "Elegir"), (NavAction::Back, "Cerrar")],
@@ -254,6 +256,19 @@ pub fn button_hint(ui: &mut egui::Ui, button: &str, label: &str) {
         });
     ui.add_space(6.0);
     ui.label(RichText::new(label).size(15.0).color(theme::pal().text_dim));
+}
+
+/// Boton grande y legible a distancia, para las acciones principales de una
+/// pantalla (jugar, descargar, guardar...). El texto se pinta oscuro sobre el
+/// acento y claro sobre los tonos de fondo.
+pub fn action_button(ui: &mut egui::Ui, text: &str, fill: Color32) -> bool {
+    // 210 de ancho: con 4 en fila (la ficha de un juego llega a tener esas)
+    // siguen cabiendo en el ancho minimo de la ventana (960 px).
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(210.0, 54.0), Sense::click());
+    ui.painter().rect_filled(rect, Rounding::same(10.0), fill);
+    let text_color = if fill == theme::pal().accent { theme::pal().bg } else { theme::pal().text };
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, egui::FontId::proportional(19.0), text_color);
+    response.clicked()
 }
 
 /// Recuadro de foco: el usuario tiene que saber donde esta sin pensarlo.

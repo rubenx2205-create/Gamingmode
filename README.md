@@ -246,11 +246,9 @@ y lo descargado se anade solo a la biblioteca.
 
 [SteamGridDB](https://www.steamgriddb.com) es una base de datos comunitaria de
 arte de caratulas, no una tienda: no hace falta cuenta para jugar, no lanza
-nada y no sabe de compras. Con una clave gratuita, el shell busca sola la
-caratula de cada juego que aparece en pantalla, en un hilo aparte, y la
-sustituye por la generada en cuanto llega. Sin clave, esta pieza simplemente no
-hace nada: no hay ninguna otra dependencia de red en el shell aparte de las
-descargas del catalogo.
+nada y no sabe de compras. Sin clave, esta pieza simplemente no hace nada: no
+hay ninguna otra dependencia de red en el shell aparte de las descargas del
+catalogo.
 
 La clave se da de alta **desde dentro de la propia app**, sin tocar ningun
 fichero a mano: *Ajustes → Caratulas automaticas (SteamGridDB)* abre una
@@ -267,6 +265,24 @@ steamgrid_api_key = "..."      # gratis en steamgriddb.com/profile/preferences/a
 auto_fetch = true              # sin clave, no hace nada
 ```
 
+Con la clave puesta hay tres formas de que se descargue el arte, todas con
+aviso en pantalla si algo falla (nada de fallos silenciosos):
+
+| Donde | Como | Cuando |
+|---|---|---|
+| Biblioteca (automatico) | Al navegar la rejilla, cada tarjeta sin caratula que entra en pantalla pide la suya sola. | `covers.auto_fetch = true` (activado de serie) |
+| Ficha de un juego | Boton **"Buscar caratula"** (o "Volver a buscar" si ya tiene una) | Cuando quieras, para un juego suelto -util si la automatica fallo o el juego es nuevo y todavia no ha pasado por la rejilla- |
+| Ajustes → Caratulas automaticas | Boton **"Descargar las que faltan"** | Busca de golpe la caratula de *todos* los juegos sin arte de la biblioteca, .exe incluidos, sin esperar a que cada uno aparezca en pantalla |
+
+La busqueda usa el titulo del juego tal cual esta en la biblioteca. Para un
+`.exe` anadido a mano, ese titulo sale del nombre del fichero
+(`mi_juego_v2.exe` → "Mi Juego V2"): si el nombre real del ejecutable se aleja
+mucho del titulo oficial del juego, SteamGridDB puede no encontrar nada. El
+boton "Buscar caratula" de la ficha avisa del motivo exacto si falla (por
+ejemplo, "ningun juego de SteamGridDB coincide con..."), asi que al menos no
+es un misterio por que no aparecio nada. Renombrar el juego desde la interfaz
+para ayudar a la busqueda no esta implementado todavia.
+
 ## Pendiente
 
 - Detectar el modelo de portatil para ajustar los valores por defecto.
@@ -275,3 +291,6 @@ auto_fetch = true              # sin clave, no hace nada
   pero escribirla letra a letra sigue necesitando teclado).
 - Bordes redondeados en las caratulas reales (ahora mismo se recortan en
   rectangulo; egui no da rondeado nativo al recortar una imagen).
+- Renombrar un juego desde la interfaz: ayudaria a que la busqueda en
+  SteamGridDB encuentre caratula cuando el titulo (sacado del nombre del
+  `.exe`) se aleja del titulo oficial del juego.
