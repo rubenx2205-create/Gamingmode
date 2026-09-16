@@ -80,6 +80,11 @@ pub const HANDHELD_HELPERS: &[Helper] = &[
     helper("reWASDEngine", "reWASD", HelperRole::Controller),
     helper("XOutput", "XOutput", HelperRole::Controller),
     helper("x360ce", "x360ce", HelperRole::Controller),
+    // --- Mapeo de mando de escritorio (no hace falta un aparato portatil) ---
+    helper("JoyToKey", "JoyToKey", HelperRole::Controller),
+    helper("AntiMicroX", "AntiMicroX", HelperRole::Controller),
+    helper("InputMapper", "InputMapper", HelperRole::Controller),
+    helper("BetterJoyForCemu", "BetterJoy", HelperRole::Controller),
     // --- Superposiciones y limitadores ---
     helper("RTSS", "RivaTuner Statistics Server", HelperRole::Overlay),
     helper("RTSSHooksLoader64", "RivaTuner Statistics Server", HelperRole::Overlay),

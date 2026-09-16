@@ -61,27 +61,6 @@ impl MemoryStatus {
     }
 }
 
-/// Clases de prioridad de Windows (valores del SDK, replicados para poder
-/// serializarlos en el snapshot sin depender del crate `windows`).
-pub mod priority {
-    pub const IDLE: u32 = 0x0000_0040;
-    pub const BELOW_NORMAL: u32 = 0x0000_4000;
-    pub const NORMAL: u32 = 0x0000_0020;
-    pub const ABOVE_NORMAL: u32 = 0x0000_8000;
-    pub const HIGH: u32 = 0x0000_0080;
-
-    pub fn name(class: u32) -> &'static str {
-        match class {
-            IDLE => "baja",
-            BELOW_NORMAL => "inferior a normal",
-            NORMAL => "normal",
-            ABOVE_NORMAL => "superior a normal",
-            HIGH => "alta",
-            _ => "desconocida",
-        }
-    }
-}
-
 #[cfg(windows)]
 mod imp;
 #[cfg(not(windows))]

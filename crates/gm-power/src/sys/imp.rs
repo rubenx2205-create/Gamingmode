@@ -11,7 +11,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Power::{PowerGetActiveScheme, PowerSetActiveScheme};
-use windows::Win32::System::ProcessStatus::{EmptyWorkingSet, GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::Registry::HKEY;
 use windows::Win32::System::Services::{
     CloseServiceHandle, ControlService, EnumServicesStatusExW, OpenSCManagerW, OpenServiceW, QueryServiceStatus,
@@ -21,10 +21,8 @@ use windows::Win32::System::Services::{
 };
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetPriorityClass, OpenProcess, OpenProcessToken, ProcessPowerThrottling, SetPriorityClass,
-    SetProcessInformation, TerminateProcess, PROCESS_ACCESS_RIGHTS, PROCESS_CREATION_FLAGS,
-    PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    GetCurrentProcess, OpenProcess, OpenProcessToken, TerminateProcess, PROCESS_ACCESS_RIGHTS,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
 
 use super::{MemoryStatus, ProcInfo, ProcessUsage, ServiceRunState, ServiceStatus};
@@ -217,52 +215,6 @@ pub fn list_processes() -> Result<Vec<ProcInfo>> {
     }
 }
 
-pub fn priority_class(pid: u32) -> Result<u32> {
-    with_process(pid, PROCESS_QUERY_LIMITED_INFORMATION, |handle| {
-        let class = unsafe { GetPriorityClass(handle) };
-        if class == 0 {
-            Err(Error::Os { call: "GetPriorityClass", code: pid })
-        } else {
-            Ok(class)
-        }
-    })
-}
-
-pub fn set_priority_class(pid: u32, class: u32) -> Result<()> {
-    with_process(pid, PROCESS_SET_INFORMATION, |handle| unsafe {
-        SetPriorityClass(handle, PROCESS_CREATION_FLAGS(class))
-            .map_err(|e| Error::Os { call: "SetPriorityClass", code: e.code().0 as u32 })
-    })
-}
-
-/// EcoQoS: el planificador manda el proceso a los nucleos eficientes y le baja
-/// la frecuencia. Es la forma moderna (y reversible) de quitar de en medio a
-/// los procesos de fondo sin matarlos.
-pub fn set_eco_qos(pid: u32, enabled: bool) -> Result<()> {
-    with_process(pid, PROCESS_SET_INFORMATION, |handle| unsafe {
-        let state = PROCESS_POWER_THROTTLING_STATE {
-            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            // ControlMask a 0 devuelve el proceso al comportamiento por defecto
-            // del sistema, que es justo lo que queremos al restaurar.
-            ControlMask: if enabled { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 },
-            StateMask: if enabled { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 },
-        };
-        SetProcessInformation(
-            handle,
-            ProcessPowerThrottling,
-            &state as *const _ as *const c_void,
-            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
-        )
-        .map_err(|e| Error::Os { call: "SetProcessInformation", code: e.code().0 as u32 })
-    })
-}
-
-pub fn trim_working_set(pid: u32) -> Result<()> {
-    with_process(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA, |handle| unsafe {
-        EmptyWorkingSet(handle).map_err(|e| Error::Os { call: "EmptyWorkingSet", code: e.code().0 as u32 })
-    })
-}
-
 pub fn memory_status() -> Result<MemoryStatus> {
     unsafe {
         let mut status =
@@ -291,6 +243,17 @@ pub fn kill_explorer() -> Result<()> {
 pub fn start_explorer() -> Result<()> {
     std::process::Command::new("explorer.exe").spawn()?;
     Ok(())
+}
+
+/// Cierra un proceso de verdad (cierre agresivo de fondo). A diferencia de
+/// `kill_explorer`, que siempre se relanza al salir, esto no tiene vuelta
+/// atras: solo se llama sobre procesos ya filtrados por `select`, que nunca
+/// incluye nada protegido (sistema, mando, ventiladores, TDP, superposicion,
+/// el propio shell o el juego en marcha).
+pub fn terminate_process(pid: u32) -> Result<()> {
+    with_process(pid, PROCESS_TERMINATE, |handle| unsafe {
+        TerminateProcess(handle, 0).map_err(|e| Error::Os { call: "TerminateProcess", code: e.code().0 as u32 })
+    })
 }
 
 pub fn current_pid() -> u32 {

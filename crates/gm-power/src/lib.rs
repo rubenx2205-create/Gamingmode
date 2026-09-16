@@ -20,7 +20,7 @@ pub use protect::{Helper, HelperRole};
 pub use scan::{scan, ServiceReport, SystemScan};
 pub use select::Selection;
 pub use services::ServiceEntry;
-pub use snapshot::{ProcessState, ServiceState, Snapshot};
+pub use snapshot::{ServiceState, Snapshot};
 pub use sys::{list_service_status, memory_status, sample_processes, MemoryStatus, ProcessUsage, ServiceStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,7 +167,7 @@ impl Optimizer {
         self.persist(&snapshot, &mut report);
 
         self.stop_services(&mut snapshot, &mut report);
-        self.throttle_processes(&mut snapshot, &mut report);
+        self.throttle_processes(&mut report);
         self.handle_explorer(&mut snapshot, &mut report);
 
         self.persist(&snapshot, &mut report);
@@ -195,27 +195,6 @@ impl Optimizer {
             match sys::start_explorer() {
                 Ok(()) => report.applied("escritorio", "explorer.exe relanzado"),
                 Err(e) => report.failed("escritorio", format!("no se pudo relanzar explorer.exe: {e}")),
-            }
-        }
-
-        let live: Vec<sys::ProcInfo> = sys::list_processes().unwrap_or_default();
-        for process in &snapshot.processes {
-            // Un PID se reutiliza; sin comprobar el nombre podriamos estar
-            // cambiandole la prioridad a un proceso que no es el nuestro.
-            let still_there = live.iter().any(|p| p.pid == process.pid && p.name == process.name);
-            if !still_there {
-                report.skipped("procesos", format!("{} ya no esta en ejecucion", process.name));
-                continue;
-            }
-            if process.eco_qos_applied {
-                let _ = sys::set_eco_qos(process.pid, false);
-            }
-            match sys::set_priority_class(process.pid, process.previous_priority) {
-                Ok(()) => report.applied(
-                    "procesos",
-                    format!("{} vuelve a prioridad {}", process.name, sys::priority::name(process.previous_priority)),
-                ),
-                Err(e) => report.failed("procesos", format!("{}: {e}", process.name)),
             }
         }
 
@@ -355,9 +334,14 @@ impl Optimizer {
         }
     }
 
-    /// Busca lo que mas pesa ahora mismo y lo aparta, respetando todo lo que
-    /// esta protegido.
-    fn throttle_processes(&self, snapshot: &mut Snapshot, report: &mut Report) {
+    /// Busca lo que mas pesa ahora mismo y lo cierra, respetando todo lo que
+    /// esta protegido. Es un cierre de verdad (`TerminateProcess`), no una
+    /// bajada de prioridad: no hay snapshot que guardar para esto porque no
+    /// hay vuelta atras posible, igual que si el usuario lo cerrara a mano
+    /// desde el Administrador de tareas. `select_throttle_targets` es quien
+    /// garantiza que nunca entra aqui nada del sistema, del mando, del juego
+    /// en marcha o de la lista de protegidos.
+    fn throttle_processes(&self, report: &mut Report) {
         let processes = match sys::sample_processes() {
             Ok(processes) => processes,
             Err(e) => {
@@ -378,41 +362,23 @@ impl Optimizer {
         let selection = select::select_throttle_targets(&processes, &self.config, sys::current_pid(), self.game_pid);
 
         if selection.targets.is_empty() {
-            report.skipped("procesos", "no hay nada de fondo que merezca la pena degradar");
+            report.skipped("procesos", "no hay nada de fondo que merezca la pena cerrar");
             return;
         }
 
         for target in &selection.targets {
-            let previous = sys::priority_class(target.pid).unwrap_or(sys::priority::NORMAL);
-            if previous == sys::priority::IDLE {
-                continue; // ya estaba en minimos: no hay estado que guardar
-            }
-            if let Err(e) = sys::set_priority_class(target.pid, sys::priority::IDLE) {
-                report.skipped("procesos", format!("{} (pid {}): {e}", target.name, target.pid));
-                continue;
-            }
-
-            let eco = self.config.eco_qos_background && sys::set_eco_qos(target.pid, true).is_ok();
-            if self.config.trim_working_sets {
-                let _ = sys::trim_working_set(target.pid);
-            }
-
-            snapshot.processes.push(ProcessState {
-                pid: target.pid,
-                name: target.name.clone(),
-                previous_priority: previous,
-                eco_qos_applied: eco,
-            });
-            report.applied(
-                "procesos",
-                format!(
-                    "{} ({}){}{}",
-                    target.name,
-                    gm_core::util::format_bytes(target.working_set),
-                    if eco { " · EcoQoS" } else { "" },
-                    if target.forced { " · siempre" } else { "" }
+            match sys::terminate_process(target.pid) {
+                Ok(()) => report.applied(
+                    "procesos",
+                    format!(
+                        "{} ({}) cerrado{}",
+                        target.name,
+                        gm_core::util::format_bytes(target.working_set),
+                        if target.forced { " · siempre" } else { "" }
+                    ),
                 ),
-            );
+                Err(e) => report.skipped("procesos", format!("{} (pid {}): {e}", target.name, target.pid)),
+            }
         }
     }
 

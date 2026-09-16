@@ -4,8 +4,6 @@
 //! fichero parcial (o de una version anterior) se completa con los valores por
 //! defecto en lugar de fallar.
 
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -17,9 +15,7 @@ pub struct Config {
     pub general: General,
     pub input: Input,
     pub power: Power,
-    pub catalog: Catalog,
     pub covers: Covers,
-    pub emulators: Vec<Emulator>,
 }
 
 /// Esquema de color de la interfaz. Deliberadamente monocromo (blanco, negro
@@ -146,14 +142,15 @@ pub struct Power {
     pub services: Vec<String>,
 
     /// Buscar automaticamente los procesos de fondo que mas recursos estan
-    /// consumiendo en este equipo y degradarlos, en vez de ir con una lista
-    /// fija de nombres de programas conocidos.
+    /// consumiendo en este equipo y cerrarlos (cierre agresivo: no es
+    /// reversible), en vez de ir con una lista fija de nombres de programas
+    /// conocidos.
     pub auto_throttle: bool,
-    /// Cuantos procesos se degradan como mucho.
+    /// Cuantos procesos se cierran como mucho.
     pub auto_throttle_max: usize,
     /// Un proceso entra en el ranking a partir de esta RAM.
     pub auto_throttle_min_mb: u64,
-    /// Procesos que el usuario quiere degradar siempre, pesen lo que pesen.
+    /// Procesos que el usuario quiere cerrar siempre, pesen lo que pesen.
     pub extra_throttle: Vec<String>,
 
     /// Procesos que no se tocan nunca, ademas de los protegidos de serie.
@@ -162,11 +159,6 @@ pub struct Power {
     /// TDP, superposiciones). Imprescindible en una Steam Deck con Windows.
     pub protect_handheld_helpers: bool,
 
-    /// Aplicar EcoQoS a los procesos degradados: el planificador los manda a
-    /// los nucleos eficientes y baja su frecuencia.
-    pub eco_qos_background: bool,
-    /// Vaciar el working set de los procesos degradados para devolver RAM.
-    pub trim_working_sets: bool,
     /// Prioridad del proceso del juego.
     pub game_priority: GamePriority,
     /// Cerrar explorer.exe durante la sesion (libera ~150-300 MB y quita la
@@ -189,8 +181,6 @@ impl Default for Power {
             extra_throttle: Vec::new(),
             protected_processes: Vec::new(),
             protect_handheld_helpers: true,
-            eco_qos_background: true,
-            trim_working_sets: true,
             game_priority: GamePriority::High,
             kill_explorer: false,
             restore_on_exit: true,
@@ -212,51 +202,6 @@ pub struct Covers {
     /// Buscar la caratula sola en cuanto un juego sin caratula aparece en
     /// pantalla. Sin clave configurada no tiene efecto.
     pub auto_fetch: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Catalog {
-    /// Carpeta con los `.jsonl` del repositorio Roms.
-    pub index_dir: Option<PathBuf>,
-    /// Donde se descargan las ROMs.
-    pub download_dir: Option<PathBuf>,
-    /// Techo de memoria para los indices de plataforma cargados. Al superarlo
-    /// se descarga la plataforma usada hace mas tiempo.
-    pub max_index_memory_mb: u64,
-    /// Numero maximo de entradas que se mantienen en el resultado de busqueda.
-    pub max_search_results: usize,
-}
-
-impl Default for Catalog {
-    fn default() -> Self {
-        Self { index_dir: None, download_dir: None, max_index_memory_mb: 256, max_search_results: 500 }
-    }
-}
-
-/// Emulador externo al que se le pasa una ROM.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Emulator {
-    pub id: String,
-    pub name: String,
-    pub exe: PathBuf,
-    /// Argumentos; `{rom}` se sustituye por la ruta de la ROM.
-    pub args: Vec<String>,
-    /// Identificadores de plataforma que cubre (`snes`, `psx`, ...).
-    pub platforms: Vec<String>,
-}
-
-impl Default for Emulator {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            name: String::new(),
-            exe: PathBuf::new(),
-            args: vec!["{rom}".to_string()],
-            platforms: Vec::new(),
-        }
-    }
 }
 
 impl Config {
@@ -281,19 +226,6 @@ impl Config {
             std::fs::create_dir_all(parent)?;
         }
         crate::util::write_atomic(path, toml::to_string_pretty(self)?.as_bytes())
-    }
-
-    /// Emulador asignado a una plataforma del catalogo, si hay alguno.
-    pub fn emulator_for(&self, platform: &str) -> Option<&Emulator> {
-        self.emulators.iter().find(|e| e.platforms.iter().any(|p| p.eq_ignore_ascii_case(platform)))
-    }
-
-    pub fn emulator_by_id(&self, id: &str) -> Option<&Emulator> {
-        self.emulators.iter().find(|e| e.id == id)
-    }
-
-    pub fn download_dir(&self) -> PathBuf {
-        self.catalog.download_dir.clone().unwrap_or_else(|| paths::data_dir().join("roms"))
     }
 }
 

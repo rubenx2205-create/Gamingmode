@@ -20,16 +20,6 @@ pub struct ServiceState {
     pub was_running: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessState {
-    pub pid: u32,
-    /// Se guarda el nombre para no restaurar la prioridad de un proceso que
-    /// simplemente heredo el PID de otro que murio.
-    pub name: String,
-    pub previous_priority: u32,
-    pub eco_qos_applied: bool,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Snapshot {
     pub taken_at: u64,
@@ -40,8 +30,6 @@ pub struct Snapshot {
     pub power_scheme: Option<SchemeGuid>,
     #[serde(default)]
     pub services: Vec<ServiceState>,
-    #[serde(default)]
-    pub processes: Vec<ProcessState>,
     #[serde(default)]
     pub explorer_killed: bool,
 }
@@ -77,7 +65,7 @@ impl Snapshot {
 
     /// Hay algo que revertir?
     pub fn is_empty(&self) -> bool {
-        self.power_scheme.is_none() && self.services.is_empty() && self.processes.is_empty() && !self.explorer_killed
+        self.power_scheme.is_none() && self.services.is_empty() && !self.explorer_killed
     }
 }
 

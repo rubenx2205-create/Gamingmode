@@ -48,22 +48,6 @@ pub fn list_service_status() -> Result<Vec<ServiceStatus>> {
     Ok(Vec::new())
 }
 
-pub fn priority_class(_pid: u32) -> Result<u32> {
-    Err(Error::Unsupported(MSG))
-}
-
-pub fn set_priority_class(_pid: u32, _class: u32) -> Result<()> {
-    Err(Error::Unsupported(MSG))
-}
-
-pub fn set_eco_qos(_pid: u32, _enabled: bool) -> Result<()> {
-    Err(Error::Unsupported(MSG))
-}
-
-pub fn trim_working_set(_pid: u32) -> Result<()> {
-    Err(Error::Unsupported(MSG))
-}
-
 pub fn memory_status() -> Result<MemoryStatus> {
     Ok(MemoryStatus::default())
 }
@@ -73,6 +57,10 @@ pub fn kill_explorer() -> Result<()> {
 }
 
 pub fn start_explorer() -> Result<()> {
+    Err(Error::Unsupported(MSG))
+}
+
+pub fn terminate_process(_pid: u32) -> Result<()> {
     Err(Error::Unsupported(MSG))
 }
 
