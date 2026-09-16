@@ -11,35 +11,28 @@ mod nav;
 mod theme;
 mod views;
 
-use gm_core::config::Config;
-
 fn main() -> eframe::Result {
     let _ = gm_core::paths::ensure_dirs();
     init_logging();
-
-    // La configuracion se lee aqui para saber como abrir la ventana; `App` la
-    // vuelve a leer para quedarse con su copia.
-    let config = Config::load().unwrap_or_default();
     log::info!("arrancando modo juego {}", env!("CARGO_PKG_VERSION"));
 
-    let mut viewport = egui::ViewportBuilder::default()
+    // El modo de pantalla (fullscreen o no) NO se pide aqui: `winit` recuerda
+    // el valor con el que crea la ventana, y si coincide con el que `App` le
+    // vuelve a pedir en su primer frame (ver app.rs) lo descarta por
+    // considerarlo un no-op, dejando la ventana atascada en su tamano normal.
+    // Se crea siempre en modo ventana normal, oculta, y es `App` quien decide
+    // el modo real una vez viva.
+    let viewport = egui::ViewportBuilder::default()
         .with_title("Modo Juego")
         .with_app_id("gamingmode")
         .with_icon(load_icon())
         .with_min_inner_size([960.0, 540.0])
         .with_inner_size([1280.0, 720.0])
         // La ventana nace oculta: `App` la ensena en cuanto ha aplicado el
-        // modo de pantalla (fullscreen o no) en su primer frame. Sin esto se
-        // alcanza a ver, durante una fraccion de segundo, la ventana a su
-        // tamano de ventana normal antes de que salte a pantalla completa.
+        // modo de pantalla en su primer frame. Sin esto se alcanza a ver,
+        // durante una fraccion de segundo, la ventana a su tamano de ventana
+        // normal antes de que salte a pantalla completa.
         .with_visible(false);
-    if config.general.fullscreen {
-        // `with_maximized` de mas: en algunos controladores graficos de
-        // Windows el paso a pantalla completa sin bordes tarda un frame en
-        // ocupar todo el monitor, y maximizada de entrada evita que ese
-        // primer frame (todavia oculto) se quede con un tamano pequeno.
-        viewport = viewport.with_fullscreen(true).with_decorations(false).with_maximized(true);
-    }
 
     let options = eframe::NativeOptions {
         viewport,
