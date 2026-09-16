@@ -28,15 +28,11 @@ enum Row {
     AutoThrottleMax,
     AutoThrottleMinMb,
     ProtectHandheld,
-    EcoQos,
-    TrimWorkingSets,
     GamePriority,
     KillExplorer,
     EngageOnStart,
     RestoreOnExit,
-    CatalogDir,
-    DownloadDir,
-    CatalogBudget,
+    ImportGamesFolder,
     CoverAutoFetch,
 }
 
@@ -58,15 +54,11 @@ const ROWS: &[(&str, Row)] = &[
     ("Rendimiento", Row::AutoThrottleMax),
     ("Rendimiento", Row::AutoThrottleMinMb),
     ("Rendimiento", Row::ProtectHandheld),
-    ("Rendimiento", Row::EcoQos),
-    ("Rendimiento", Row::TrimWorkingSets),
     ("Rendimiento", Row::GamePriority),
     ("Rendimiento", Row::KillExplorer),
     ("Rendimiento", Row::EngageOnStart),
     ("Rendimiento", Row::RestoreOnExit),
-    ("Catalogo", Row::CatalogDir),
-    ("Catalogo", Row::DownloadDir),
-    ("Catalogo", Row::CatalogBudget),
+    ("Biblioteca", Row::ImportGamesFolder),
     ("Caratulas", Row::CoverAutoFetch),
 ];
 
@@ -78,7 +70,6 @@ const BACKGROUND_FPS: &[u32] = &[1, 2, 4, 8];
 const UI_SCALE: &[f32] = &[0.8, 0.9, 1.0, 1.1, 1.25, 1.5];
 const DEADZONE: &[f32] = &[0.15, 0.25, 0.35, 0.45];
 const REPEAT_DELAY: &[u64] = &[250, 380, 500, 700];
-const BUDGET_MB: &[u64] = &[64, 128, 256, 512, 1024];
 const THROTTLE_MAX: &[usize] = &[4, 8, 12, 20, 30];
 const THROTTLE_MIN_MB: &[u64] = &[50, 80, 120, 200, 400];
 const PLANS: &[PowerPlan] = &[PowerPlan::Leave, PowerPlan::Balanced, PowerPlan::HighPerformance, PowerPlan::Ultimate];
@@ -136,8 +127,6 @@ impl App {
             Row::AutoThrottleMax => format!("{} procesos", self.config.power.auto_throttle_max),
             Row::AutoThrottleMinMb => format!("desde {} MB", self.config.power.auto_throttle_min_mb),
             Row::ProtectHandheld => on_off(self.config.power.protect_handheld_helpers).to_string(),
-            Row::EcoQos => on_off(self.config.power.eco_qos_background).to_string(),
-            Row::TrimWorkingSets => on_off(self.config.power.trim_working_sets).to_string(),
             Row::GamePriority => match self.config.power.game_priority {
                 GamePriority::Normal => "normal".to_string(),
                 GamePriority::AboveNormal => "superior a normal".to_string(),
@@ -146,15 +135,7 @@ impl App {
             Row::KillExplorer => on_off(self.config.power.kill_explorer).to_string(),
             Row::EngageOnStart => on_off(self.config.power.engage_on_start).to_string(),
             Row::RestoreOnExit => on_off(self.config.power.restore_on_exit).to_string(),
-            Row::CatalogDir => self
-                .config
-                .catalog
-                .index_dir
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "sin configurar".to_string()),
-            Row::DownloadDir => self.config.download_dir().display().to_string(),
-            Row::CatalogBudget => format!("{} MB", self.config.catalog.max_index_memory_mb),
+            Row::ImportGamesFolder => "elegir carpeta →".to_string(),
             Row::CoverAutoFetch => match &self.config.covers.steamgrid_api_key {
                 None => "sin configurar →".to_string(),
                 Some(key) if key.trim().is_empty() => "sin configurar →".to_string(),
@@ -179,19 +160,15 @@ impl App {
             Row::Rumble => "Vibracion",
             Row::PowerPlan => "Plan de energia",
             Row::StopServices => "Detener servicios de Windows",
-            Row::AutoThrottle => "Buscar solo lo que mas pesa",
-            Row::AutoThrottleMax => "Cuantos procesos degradar",
+            Row::AutoThrottle => "Cierre agresivo de lo que mas pesa",
+            Row::AutoThrottleMax => "Cuantos procesos cerrar",
             Row::AutoThrottleMinMb => "A partir de cuanta RAM",
             Row::ProtectHandheld => "Proteger utilidades de portatil",
-            Row::EcoQos => "EcoQoS en procesos de fondo",
-            Row::TrimWorkingSets => "Liberar memoria de procesos de fondo",
             Row::GamePriority => "Prioridad del juego",
             Row::KillExplorer => "Cerrar explorer.exe (avanzado)",
             Row::EngageOnStart => "Activar modo juego al arrancar",
             Row::RestoreOnExit => "Restaurar el sistema al salir",
-            Row::CatalogDir => "Carpeta del catalogo",
-            Row::DownloadDir => "Carpeta de descargas",
-            Row::CatalogBudget => "Memoria maxima del catalogo",
+            Row::ImportGamesFolder => "Importar carpeta de juegos",
             Row::CoverAutoFetch => "Caratulas automaticas (SteamGridDB)",
         }
     }
@@ -202,16 +179,18 @@ impl App {
             Row::StopServices => {
                 "Solo se ofrecen servicios que se pueden parar sin romper nada. Elige cuales en Recursos"
             }
-            Row::AutoThrottle => "Mide el equipo y degrada los procesos de fondo mas pesados, sin listas de programas",
+            Row::AutoThrottle => {
+                "Mide el equipo y CIERRA de verdad los procesos de fondo mas pesados, sin listas de programas. \
+                 No hay vuelta atras para lo que cierra: nunca toca el sistema, el mando ni el juego en marcha"
+            }
             Row::ProtectHandheld => {
                 "Mando, ventiladores, TDP y superposiciones de Steam Deck y similares: nunca se tocan"
             }
-            Row::EcoQos => "Manda los procesos de fondo a los nucleos eficientes; reversible",
             Row::KillExplorer => "Libera RAM y quita la barra de tareas. Se relanza al salir",
             Row::PowerPlan => "Se restaura el plan original al salir del modo juego",
-            Row::CatalogDir => "Carpeta con los .jsonl del repositorio Roms",
             Row::Fullscreen => "Se aplica al momento; tambien con F11",
             Row::ThemeMode => "Blanco y negro nada mas: sin acento de color de ningun lanzador",
+            Row::ImportGamesFolder => "Anade automaticamente todos los .exe de la carpeta (y subcarpetas) elegida",
             Row::CoverAutoFetch => "Pulsa para configurar la clave gratuita, pegarla y probarla",
             _ => "",
         }
@@ -263,24 +242,14 @@ impl App {
             Row::ProtectHandheld => {
                 self.config.power.protect_handheld_helpers = !self.config.power.protect_handheld_helpers
             }
-            Row::EcoQos => self.config.power.eco_qos_background = !self.config.power.eco_qos_background,
-            Row::TrimWorkingSets => self.config.power.trim_working_sets = !self.config.power.trim_working_sets,
             Row::GamePriority => {
                 self.config.power.game_priority = cycle(PRIORITIES, self.config.power.game_priority, forward)
             }
             Row::KillExplorer => self.config.power.kill_explorer = !self.config.power.kill_explorer,
             Row::EngageOnStart => self.config.power.engage_on_start = !self.config.power.engage_on_start,
             Row::RestoreOnExit => self.config.power.restore_on_exit = !self.config.power.restore_on_exit,
-            Row::CatalogBudget => {
-                self.config.catalog.max_index_memory_mb =
-                    cycle(BUDGET_MB, self.config.catalog.max_index_memory_mb, forward)
-            }
-            Row::CatalogDir => {
-                self.open_browser(BrowserPurpose::PickCatalogDir);
-                return;
-            }
-            Row::DownloadDir => {
-                self.open_browser(BrowserPurpose::PickDownloadDir);
+            Row::ImportGamesFolder => {
+                self.open_browser(BrowserPurpose::ImportFolder);
                 return;
             }
             Row::CoverAutoFetch => {

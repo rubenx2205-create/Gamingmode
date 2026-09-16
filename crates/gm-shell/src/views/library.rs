@@ -19,12 +19,21 @@ impl App {
         ui.add_space(10.0);
 
         if self.library_view.is_empty() {
-            let hint = if self.query.is_empty() {
-                "Pulsa X (o F2) para anadir un .exe, o RB para abrir el catalogo de ROMs"
+            if self.view == View::Favorites {
+                let hint = if self.query.is_empty() {
+                    "Marca algun juego como favorito con Y (o F) desde la biblioteca"
+                } else {
+                    "Ninguna coincidencia. Pulsa B para limpiar la busqueda"
+                };
+                empty_state(ui, "No hay favoritos todavia", hint);
             } else {
-                "Ninguna coincidencia. Pulsa B para limpiar la busqueda"
-            };
-            empty_state(ui, "No hay nada aqui todavia", hint);
+                let hint = if self.query.is_empty() {
+                    "Pulsa X (o F2) para anadir un .exe, o importa una carpeta entera desde Ajustes"
+                } else {
+                    "Ninguna coincidencia. Pulsa B para limpiar la busqueda"
+                };
+                empty_state(ui, "No hay nada aqui todavia", hint);
+            }
             return;
         }
 
@@ -160,10 +169,12 @@ impl App {
                 self.cycle_sort();
             }
 
-            let favorites = if self.favorites_only { "Solo favoritos ✓" } else { "Solo favoritos" };
-            if ui.button(favorites).clicked() {
-                self.favorites_only = !self.favorites_only;
+            ui.add_space(16.0);
+            let (label, target) =
+                if self.view == View::Favorites { ("Biblioteca", View::Library) } else { ("Favoritos", View::Favorites) };
+            if ui.button(label).clicked() {
                 self.mark_library_dirty();
+                self.set_root_view(target);
             }
 
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {

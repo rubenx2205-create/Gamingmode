@@ -5,16 +5,14 @@
 //! aqui se le pide a un ritmo que depende de lo que este pasando (navegando,
 //! en reposo o con un juego en marcha).
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::collections::{HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::covers::CoverTextures;
-use gm_catalog::download::Downloader;
-use gm_catalog::{Catalog, PlatformIndex};
 use gm_core::config::Config;
 use gm_core::launcher::{self, Session};
 use gm_core::library::{Game, Launch, Library, Sort};
@@ -26,10 +24,8 @@ use crate::browser::{Browser, Filter};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Library,
+    Favorites,
     GameDetail,
-    Catalog,
-    CatalogEntries,
-    Downloads,
     /// Que esta consumiendo el equipo y que se va a hacer al respecto.
     Resources,
     Settings,
@@ -38,6 +34,22 @@ pub enum View {
     /// Panel rapido del boton Guia; funciona tambien con un juego en marcha.
     Quick,
     Browser,
+    /// Revision, exe por exe, de lo que se va a anadir tras elegir una
+    /// carpeta a importar: nada entra en la biblioteca sin que el usuario lo
+    /// marque aqui primero.
+    ImportReview,
+}
+
+/// Un `.exe` encontrado al importar una carpeta, pendiente de confirmar.
+#[derive(Debug, Clone)]
+pub struct ImportCandidate {
+    pub path: PathBuf,
+    pub title: String,
+    /// Se anade a la biblioteca si se confirma con esto marcado.
+    pub checked: bool,
+    /// Pinta de instalador/redistribuible (nombre tipo `setup`, `unins000`...);
+    /// entra desmarcado de serie, pero se puede marcar a mano si hace falta.
+    pub installer: bool,
 }
 
 /// Como va la prueba de la clave de SteamGridDB que se esta editando.
@@ -107,9 +119,9 @@ const MAX_CONCURRENT_COVER_FETCHES: usize = 3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserPurpose {
     AddExecutable,
-    AddRom,
-    PickCatalogDir,
-    PickDownloadDir,
+    /// Analiza una carpeta entera (y sus subcarpetas) y anade cada `.exe`
+    /// que encuentra a la biblioteca de una vez.
+    ImportFolder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,18 +137,9 @@ pub struct Toast {
     pub until: Instant,
 }
 
-/// Carga de una plataforma del catalogo en un hilo aparte.
-struct LoadJob {
-    id: String,
-    rx: Receiver<gm_core::Result<PlatformIndex>>,
-    started: Instant,
-}
-
 pub struct App {
     pub config: Config,
     pub library: Library,
-    pub catalog: Catalog,
-    pub downloader: Downloader,
     pub input: InputHub,
 
     /// El optimizador se maneja desde un hilo: parar servicios puede tardar
@@ -158,7 +161,6 @@ pub struct App {
     library_dirty: bool,
     pub query: String,
     pub sort: Sort,
-    pub favorites_only: bool,
     pub search_active: bool,
     /// Ficha de un juego con el titulo en edicion: util para dejar un nombre
     /// mas parecido al oficial antes de buscarle caratula en SteamGridDB,
@@ -166,22 +168,17 @@ pub struct App {
     pub renaming: bool,
     pub rename_draft: String,
 
-    // Catalogo
-    pub platform_focus: usize,
-    pub open_platform: Option<String>,
-    pub entry_focus: usize,
-    pub entry_hits: Vec<usize>,
-    pub catalog_query: String,
-    loading: Option<LoadJob>,
-
     // Explorador de ficheros
     pub browser: Option<Browser>,
     pub browser_purpose: BrowserPurpose,
 
+    // Revision de una importacion de carpeta pendiente de confirmar
+    pub import_candidates: Vec<ImportCandidate>,
+    pub import_focus: usize,
+
     // Menus
     pub quick_focus: usize,
     pub settings_focus: usize,
-    pub downloads_focus: usize,
 
     // Recursos del sistema
     pub resources: Option<SystemScan>,
@@ -203,8 +200,6 @@ pub struct App {
     /// Con que se jugo por ultima vez: decide que boton ensenar en la ayuda
     /// de pantalla. Cambia solo, como en cualquier consola.
     pub input_source: crate::nav::InputSource,
-    download_meta: HashMap<u64, (String, String)>,
-    handled_downloads: HashSet<u64>,
     pub columns: usize,
 
     // Caratulas (SteamGridDB)
@@ -247,8 +242,6 @@ impl App {
             log::error!("no se pudo leer la biblioteca: {e}");
             Library::default()
         });
-        let catalog = Catalog::new(config.catalog.index_dir.clone(), config.catalog.max_index_memory_mb);
-        let downloader = Downloader::new(2);
         let input = InputHub::new(config.input.clone());
         let optimizer = Optimizer::new(config.power.clone());
         let (power_tx, power_rx) = mpsc::channel();
@@ -259,8 +252,6 @@ impl App {
         let mut app = Self {
             config,
             library,
-            catalog,
-            downloader,
             input,
             optimizer: Arc::new(Mutex::new(optimizer)),
             power_busy: Arc::new(AtomicBool::new(false)),
@@ -276,21 +267,15 @@ impl App {
             library_dirty: true,
             query: String::new(),
             sort: Sort::LastPlayed,
-            favorites_only: false,
             search_active: false,
             renaming: false,
             rename_draft: String::new(),
-            platform_focus: 0,
-            open_platform: None,
-            entry_focus: 0,
-            entry_hits: Vec::new(),
-            catalog_query: String::new(),
-            loading: None,
             browser: None,
             browser_purpose: BrowserPurpose::AddExecutable,
+            import_candidates: Vec::new(),
+            import_focus: 0,
             quick_focus: 0,
             settings_focus: 0,
-            downloads_focus: 0,
             resources: None,
             resource_focus: 0,
             resource_busy: Arc::new(AtomicBool::new(false)),
@@ -311,8 +296,6 @@ impl App {
             last_memory_check: Instant::now().checked_sub(Duration::from_secs(60)).unwrap_or_else(Instant::now),
             last_activity: Instant::now(),
             input_source: crate::nav::InputSource::KeyboardMouse,
-            download_meta: HashMap::new(),
-            handled_downloads: HashSet::new(),
             columns: 5,
             covers: CoverTextures::default(),
             cover_attempted: HashSet::new(),
@@ -443,7 +426,7 @@ impl App {
         if !self.library_dirty {
             return;
         }
-        self.library_view = self.library.view(&self.query, None, self.sort, self.favorites_only);
+        self.library_view = self.library.view(&self.query, None, self.sort, self.view == View::Favorites);
         self.library_focus = self.library_focus.min(self.library_view.len().saturating_sub(1));
         self.library_dirty = false;
     }
@@ -552,7 +535,7 @@ impl App {
             // reconstruye la vista aqui mismo, en vez de esperar al proximo
             // refresco perezoso, para poder reanclar el foco al id -no a la
             // posicion vieja, que ahora podria apuntar a otro juego distinto.
-            self.library_view = self.library.view(&self.query, None, self.sort, self.favorites_only);
+            self.library_view = self.library.view(&self.query, None, self.sort, self.view == View::Favorites);
             self.library_dirty = false;
             let still_visible =
                 self.library_view.iter().position(|&index| self.library.games.get(index).is_some_and(|g| g.id == id));
@@ -691,16 +674,10 @@ impl App {
     pub fn open_browser(&mut self, purpose: BrowserPurpose) {
         let filter = match purpose {
             BrowserPurpose::AddExecutable => Filter::Executables,
-            BrowserPurpose::AddRom => Filter::Roms,
-            BrowserPurpose::PickCatalogDir | BrowserPurpose::PickDownloadDir => Filter::Directories,
-        };
-        let start = match purpose {
-            BrowserPurpose::PickCatalogDir => self.config.catalog.index_dir.clone(),
-            BrowserPurpose::PickDownloadDir => self.config.catalog.download_dir.clone(),
-            _ => None,
+            BrowserPurpose::ImportFolder => Filter::Directories,
         };
         self.browser_purpose = purpose;
-        self.browser = Some(Browser::new(filter, start));
+        self.browser = Some(Browser::new(filter, None));
         self.push_view(View::Browser);
     }
 
@@ -723,95 +700,115 @@ impl App {
                 }
                 self.pop_view();
             }
-            BrowserPurpose::AddRom => {
+            BrowserPurpose::ImportFolder => {
+                let candidates = self.scan_exe_candidates(&path);
+                if candidates.is_empty() {
+                    self.toast(ToastKind::Info, "No se encontro ningun .exe nuevo en esa carpeta");
+                    self.pop_view();
+                    return;
+                }
+                self.import_candidates = candidates;
+                self.import_focus = 0;
+                self.set_root_view(View::ImportReview);
+            }
+        }
+    }
+
+    /// Nombres de ejecutables que casi nunca son el juego en si (instaladores,
+    /// redistribuibles, desinstaladores...): se destacan en la lista de
+    /// revision, pero siguen pudiendo marcarse a mano si de verdad hacen falta.
+    fn looks_like_installer(stem: &str) -> bool {
+        const NOISE: &[&str] = &[
+            "unins", "setup", "install", "vcredist", "vc_redist", "dxsetup", "directx", "dotnetfx", "redist",
+            "prereq", "crashpad_handler", "ue4prereqsetup", "ueprereqsetup",
+        ];
+        let lower = stem.to_lowercase();
+        NOISE.iter().any(|needle| lower.contains(needle))
+    }
+
+    /// Recorre `dir` (y sus subcarpetas, hasta una profundidad razonable)
+    /// buscando `.exe` que todavia no esten en la biblioteca. No anade nada
+    /// todavia: solo arma la lista que se revisa, exe por exe, en
+    /// `View::ImportReview` antes de que el usuario confirme que se sube.
+    fn scan_exe_candidates(&self, dir: &Path) -> Vec<ImportCandidate> {
+        const MAX_DEPTH: u32 = 6;
+        let mut candidates = Vec::new();
+        let mut pending = vec![(dir.to_path_buf(), 0u32)];
+
+        while let Some((current, depth)) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&current) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                if is_dir {
+                    if depth < MAX_DEPTH {
+                        pending.push((path, depth + 1));
+                    }
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("exe")) != Some(true) {
+                    continue;
+                }
+                if self.library.games.iter().any(|g| matches!(&g.launch, Launch::Executable { path: p, .. } if p == &path))
+                {
+                    continue; // ya esta en la biblioteca: no hace falta volver a preguntar.
+                }
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+                let installer = Self::looks_like_installer(stem);
                 let title = Game::title_from_path(&path);
-                let platform = self.open_platform.clone().unwrap_or_default();
-                let mut game =
-                    Game::new(title.clone(), Launch::Rom { path, platform: platform.clone(), emulator_id: None });
-                game.collection = gm_catalog::display_name(&platform);
-                if self.library.add(game) {
-                    self.save_library();
-                    self.mark_library_dirty();
-                    self.toast(ToastKind::Good, format!("{title} anadido a la biblioteca"));
-                }
-                self.pop_view();
+                // Los que parecen instalador entran sin marcar: hay que
+                // quererlos a proposito, no colarse por defecto.
+                candidates.push(ImportCandidate { path, title, checked: !installer, installer });
             }
-            BrowserPurpose::PickCatalogDir => {
-                self.config.catalog.index_dir = Some(path.clone());
-                self.save_config();
-                if let Err(e) = self.catalog.set_dir(Some(path)) {
-                    self.toast(ToastKind::Bad, format!("Catalogo: {e}"));
-                } else {
-                    self.toast(
-                        ToastKind::Good,
-                        format!("Catalogo: {} plataformas detectadas", self.catalog.platforms().len()),
-                    );
-                }
-                self.pop_view();
+        }
+        candidates.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        candidates
+    }
+
+    /// Anade a la biblioteca los candidatos marcados en `View::ImportReview`.
+    pub fn confirm_import(&mut self) {
+        let checked: Vec<ImportCandidate> = self.import_candidates.drain(..).filter(|c| c.checked).collect();
+        if checked.is_empty() {
+            self.toast(ToastKind::Info, "No se marco ningun .exe");
+            self.pop_view();
+            return;
+        }
+        let mut added = 0;
+        for candidate in checked {
+            let mut game = Game::new(
+                candidate.title,
+                Launch::Executable { path: candidate.path, args: Vec::new(), working_dir: None },
+            );
+            game.collection = "PC".to_string();
+            if self.library.add(game) {
+                added += 1;
             }
-            BrowserPurpose::PickDownloadDir => {
-                self.config.catalog.download_dir = Some(path);
-                self.save_config();
-                self.toast(ToastKind::Good, "Carpeta de descargas actualizada");
-                self.pop_view();
-            }
+        }
+        self.save_library();
+        self.mark_library_dirty();
+        self.toast(ToastKind::Good, format!("{added} juego(s) anadidos a la biblioteca"));
+        self.pop_view();
+    }
+
+    pub fn cancel_import(&mut self) {
+        self.import_candidates.clear();
+        self.pop_view();
+    }
+
+    pub fn toggle_import_focused(&mut self) {
+        if let Some(candidate) = self.import_candidates.get_mut(self.import_focus) {
+            candidate.checked = !candidate.checked;
         }
     }
 
-    /// Abre una plataforma del catalogo, cargandola en un hilo si hace falta.
-    pub fn open_platform(&mut self, id: String) {
-        self.entry_focus = 0;
-        self.catalog_query.clear();
-        if self.catalog.is_loaded(&id) {
-            self.catalog.touch(&id);
-            self.open_platform = Some(id);
-            self.refresh_entry_hits();
-            self.push_view(View::CatalogEntries);
-            return;
+    /// Marca o desmarca todos de golpe: si ya estaban todos marcados, los
+    /// desmarca; si no, los marca todos. Para carpetas con decenas de
+    /// candidatos, marcar uno a uno para quitar solo un par no es razonable.
+    pub fn toggle_import_all(&mut self) {
+        let all_checked = self.import_candidates.iter().all(|c| c.checked);
+        for candidate in &mut self.import_candidates {
+            candidate.checked = !all_checked;
         }
-        let Some(info) = self.catalog.platform(&id).cloned() else {
-            self.toast(ToastKind::Bad, format!("La plataforma '{id}' ya no esta en el catalogo"));
-            return;
-        };
-        let (tx, rx) = mpsc::channel();
-        let path = info.path.clone();
-        let job_id = id.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(gm_catalog::load_platform(&path, &job_id));
-        });
-        self.loading = Some(LoadJob { id, rx, started: Instant::now() });
-    }
-
-    pub fn is_loading(&self) -> Option<(&str, Duration)> {
-        self.loading.as_ref().map(|job| (job.id.as_str(), job.started.elapsed()))
-    }
-
-    pub fn refresh_entry_hits(&mut self) {
-        let Some(platform) = self.open_platform.clone() else {
-            self.entry_hits.clear();
-            return;
-        };
-        self.entry_hits = self.catalog.search(&platform, &self.catalog_query, self.config.catalog.max_search_results);
-        self.entry_focus = self.entry_focus.min(self.entry_hits.len().saturating_sub(1));
-    }
-
-    /// Encola la descarga de la entrada enfocada.
-    pub fn download_focused_entry(&mut self) {
-        let Some(platform) = self.open_platform.clone() else { return };
-        let Some(index) = self.entry_hits.get(self.entry_focus).copied() else { return };
-        let Some(entry) = self.catalog.get(&platform).and_then(|p| p.entries.get(index)).cloned() else { return };
-        let Some(url) = entry.primary_url().map(|u| u.to_string()) else {
-            self.toast(ToastKind::Bad, "Esa entrada no tiene enlace de descarga");
-            return;
-        };
-        if !self.downloader.is_available() {
-            self.toast(ToastKind::Bad, "Las descargas solo funcionan en Windows");
-            return;
-        }
-        let dest = self.config.download_dir().join(&platform).join(entry.file_name());
-        let id = self.downloader.enqueue(entry.name.clone(), url, dest);
-        self.download_meta.insert(id, (platform, entry.name.clone()));
-        self.toast(ToastKind::Good, format!("Descargando {}", entry.name));
     }
 
     /// La clave configurada, si hay alguna que no sea solo espacios.
@@ -1077,28 +1074,6 @@ impl App {
             }
         }
 
-        // Plataforma del catalogo cargada?
-        if let Some(job) = self.loading.as_ref() {
-            match job.rx.try_recv() {
-                Ok(Ok(index)) => {
-                    let id = index.id.clone();
-                    let count = index.entries.len();
-                    self.catalog.insert(index);
-                    self.open_platform = Some(id.clone());
-                    self.loading = None;
-                    self.refresh_entry_hits();
-                    self.push_view(View::CatalogEntries);
-                    self.toast(ToastKind::Info, format!("{count} entradas cargadas"));
-                }
-                Ok(Err(e)) => {
-                    self.toast(ToastKind::Bad, format!("No se pudo cargar la plataforma: {e}"));
-                    self.loading = None;
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => self.loading = None,
-            }
-        }
-
         // Informe del optimizador.
         while let Ok(report) = self.power_rx.try_recv() {
             let kind = if report.count(gm_power::Outcome::Failed) > 0 { ToastKind::Info } else { ToastKind::Good };
@@ -1121,10 +1096,6 @@ impl App {
             }
         }
 
-        // Descargas.
-        self.downloader.pump();
-        self.collect_finished_downloads();
-
         // Memoria para la barra superior, dos veces por segundo como mucho.
         if now.duration_since(self.last_memory_check) > Duration::from_millis(1500) {
             self.last_memory_check = now;
@@ -1134,30 +1105,6 @@ impl App {
         }
 
         self.toasts.retain(|toast| toast.until > now);
-    }
-
-    /// Anade a la biblioteca las ROMs cuya descarga acaba de terminar.
-    fn collect_finished_downloads(&mut self) {
-        let finished: Vec<(u64, PathBuf)> = self
-            .downloader
-            .items()
-            .iter()
-            .filter(|item| item.snapshot().state == gm_catalog::download::DownloadState::Done)
-            .filter(|item| !self.handled_downloads.contains(&item.id))
-            .map(|item| (item.id, item.dest.clone()))
-            .collect();
-
-        for (id, path) in finished {
-            self.handled_downloads.insert(id);
-            let Some((platform, name)) = self.download_meta.get(&id).cloned() else { continue };
-            let mut game = Game::new(name.clone(), Launch::Rom { path, platform: platform.clone(), emulator_id: None });
-            game.collection = gm_catalog::display_name(&platform);
-            if self.library.add(game) {
-                self.save_library();
-                self.mark_library_dirty();
-            }
-            self.toast(ToastKind::Good, format!("{name} descargado y anadido a la biblioteca"));
-        }
     }
 
     // ------------------------------------------------------------------
@@ -1200,16 +1147,25 @@ impl App {
 
     fn handle_actions(&mut self, actions: &[NavAction], ctx: &egui::Context) {
         for action in actions {
-            // El boton Guia y el menu funcionan desde cualquier sitio, incluso
-            // con un juego en marcha.
             match action {
-                NavAction::Guide | NavAction::Menu if self.view != View::Quick => {
+                // El boton Guia (el central del mando, o F12) es el unico
+                // pensado para abrir el panel encima de un juego en marcha:
+                // usa un boton que XInput no reporta por la via normal, asi
+                // que ningun juego lo tiene ya asignado a su pausa.
+                NavAction::Guide if self.view != View::Quick => {
                     self.quick_focus = 0;
                     self.push_view(View::Quick);
                     if self.session.is_some() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     }
+                    continue;
+                }
+                // Start/F1 tambien abre el panel, pero solo fuera de partida:
+                // con un juego en marcha, Start es su pausa, no la nuestra.
+                NavAction::Menu if self.view != View::Quick && self.session.is_none() => {
+                    self.quick_focus = 0;
+                    self.push_view(View::Quick);
                     continue;
                 }
                 _ => {}
@@ -1220,16 +1176,14 @@ impl App {
 
     fn handle_action(&mut self, action: NavAction, ctx: &egui::Context) {
         match self.view {
-            View::Library => self.handle_library_action(action, ctx),
+            View::Library | View::Favorites => self.handle_library_action(action, ctx),
             View::GameDetail => self.handle_detail_action(action, ctx),
-            View::Catalog => self.handle_catalog_action(action),
-            View::CatalogEntries => self.handle_entries_action(action),
-            View::Downloads => self.handle_downloads_action(action),
             View::Resources => self.handle_resources_action(action),
             View::Settings => self.handle_settings_action(action),
             View::CoverSetup => self.handle_cover_setup_action(action),
             View::Quick => self.handle_quick_action(action, ctx),
             View::Browser => self.handle_browser_action(action),
+            View::ImportReview => self.handle_import_review_action(action),
         }
     }
 
@@ -1266,7 +1220,11 @@ impl App {
             NavAction::Search => {
                 self.search_active = !self.search_active;
             }
-            NavAction::TabNext => self.push_view(View::Catalog),
+            NavAction::TabNext => {
+                let other = if self.view == View::Favorites { View::Library } else { View::Favorites };
+                self.mark_library_dirty();
+                self.set_root_view(other);
+            }
             NavAction::TabPrev => self.cycle_sort(),
             _ => {}
         }
@@ -1294,78 +1252,6 @@ impl App {
                     self.fetch_cover_now(&id, &title);
                 }
             }
-            _ => {}
-        }
-    }
-
-    fn handle_catalog_action(&mut self, action: NavAction) {
-        let len = self.catalog.platforms().len();
-        match action {
-            NavAction::Up
-            | NavAction::Down
-            | NavAction::Left
-            | NavAction::Right
-            | NavAction::PageUp
-            | NavAction::PageDown => {
-                self.platform_focus = crate::nav::move_focus(self.platform_focus, len, self.columns, action);
-            }
-            NavAction::Accept => {
-                if let Some(info) = self.catalog.platforms().get(self.platform_focus) {
-                    let id = info.id.clone();
-                    self.open_platform(id);
-                }
-            }
-            NavAction::Back => self.pop_view(),
-            NavAction::Context => self.open_browser(BrowserPurpose::PickCatalogDir),
-            NavAction::TabNext => self.push_view(View::Downloads),
-            _ => {}
-        }
-    }
-
-    fn handle_entries_action(&mut self, action: NavAction) {
-        let len = self.entry_hits.len();
-        match action {
-            NavAction::Up | NavAction::Down | NavAction::PageUp | NavAction::PageDown => {
-                self.entry_focus = crate::nav::move_list(self.entry_focus, len, action);
-            }
-            NavAction::Accept => {
-                if self.search_active {
-                    self.search_active = false;
-                } else {
-                    self.download_focused_entry();
-                }
-            }
-            NavAction::Back => {
-                if self.search_active {
-                    self.search_active = false;
-                } else if !self.catalog_query.is_empty() {
-                    self.catalog_query.clear();
-                    self.refresh_entry_hits();
-                } else {
-                    self.pop_view();
-                }
-            }
-            NavAction::Search => self.search_active = !self.search_active,
-            NavAction::Context => self.open_browser(BrowserPurpose::AddRom),
-            NavAction::TabNext => self.push_view(View::Downloads),
-            _ => {}
-        }
-    }
-
-    fn handle_downloads_action(&mut self, action: NavAction) {
-        let len = self.downloader.items().len();
-        match action {
-            NavAction::Up | NavAction::Down => {
-                self.downloads_focus = crate::nav::move_list(self.downloads_focus, len, action);
-            }
-            NavAction::Context => {
-                if let Some(item) = self.downloader.items().get(self.downloads_focus) {
-                    let id = item.id;
-                    self.downloader.cancel(id);
-                }
-            }
-            NavAction::Favorite => self.downloader.clear_finished(),
-            NavAction::Back => self.pop_view(),
             _ => {}
         }
     }
@@ -1419,6 +1305,20 @@ impl App {
                     self.pop_view();
                 }
             }
+            _ => {}
+        }
+    }
+
+    fn handle_import_review_action(&mut self, action: NavAction) {
+        let len = self.import_candidates.len();
+        match action {
+            NavAction::Up | NavAction::Down | NavAction::PageUp | NavAction::PageDown => {
+                self.import_focus = crate::nav::move_list(self.import_focus, len, action);
+            }
+            NavAction::Accept => self.toggle_import_focused(),
+            NavAction::Favorite => self.toggle_import_all(),
+            NavAction::Context => self.confirm_import(),
+            NavAction::Back => self.cancel_import(),
             _ => {}
         }
     }
@@ -1494,9 +1394,6 @@ impl eframe::App for App {
         let first_frame = self.first_frame;
         if first_frame {
             self.first_frame = false;
-            // La peticion de pantalla completa hecha al crear la ventana la
-            // ignoran algunos controladores y gestores de ventanas; se repite
-            // una vez con la ventana ya viva, que es cuando siempre funciona.
             self.request_window_mode();
         }
         self.apply_window_mode(ctx);

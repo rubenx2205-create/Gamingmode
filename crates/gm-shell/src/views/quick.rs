@@ -14,8 +14,7 @@ pub enum QuickOption {
     TogglePower,
     Resources,
     Library,
-    Catalog,
-    Downloads,
+    Favorites,
     Settings,
     Exit,
 }
@@ -34,8 +33,7 @@ impl QuickOption {
             }
             QuickOption::Resources => "Ver que esta consumiendo el equipo".to_string(),
             QuickOption::Library => "Biblioteca".to_string(),
-            QuickOption::Catalog => "Catalogo de ROMs".to_string(),
-            QuickOption::Downloads => "Descargas".to_string(),
+            QuickOption::Favorites => "Favoritos".to_string(),
             QuickOption::Settings => "Ajustes".to_string(),
             QuickOption::Exit => "Salir del modo juego".to_string(),
         }
@@ -53,8 +51,7 @@ impl App {
             QuickOption::TogglePower,
             QuickOption::Resources,
             QuickOption::Library,
-            QuickOption::Catalog,
-            QuickOption::Downloads,
+            QuickOption::Favorites,
             QuickOption::Settings,
             QuickOption::Exit,
         ]);
@@ -86,9 +83,14 @@ impl App {
                 self.set_root_view(View::Resources);
                 self.scan_resources();
             }
-            QuickOption::Library => self.set_root_view(View::Library),
-            QuickOption::Catalog => self.set_root_view(View::Catalog),
-            QuickOption::Downloads => self.set_root_view(View::Downloads),
+            QuickOption::Library => {
+                self.mark_library_dirty();
+                self.set_root_view(View::Library);
+            }
+            QuickOption::Favorites => {
+                self.mark_library_dirty();
+                self.set_root_view(View::Favorites);
+            }
             QuickOption::Settings => self.set_root_view(View::Settings),
             QuickOption::Exit => self.exit(ctx),
         }

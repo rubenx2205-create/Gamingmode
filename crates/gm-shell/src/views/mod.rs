@@ -1,11 +1,10 @@
 //! Dibujado. Cada vista vive en su propio modulo y todas comparten la barra
 //! superior, la leyenda de botones de abajo y los avisos.
 
-mod catalog;
 mod cover_setup;
 mod detail;
-mod downloads;
 mod explorer;
+mod import_review;
 mod library;
 mod quick;
 mod resources;
@@ -26,16 +25,14 @@ impl App {
         egui::CentralPanel::default()
             .frame(Frame::none().fill(theme::pal().bg).inner_margin(Margin::symmetric(28.0, 18.0)))
             .show(ctx, |ui| match self.view {
-                View::Library => self.library_view_ui(ui),
+                View::Library | View::Favorites => self.library_view_ui(ui),
                 View::GameDetail => self.detail_ui(ui),
-                View::Catalog => self.catalog_ui(ui),
-                View::CatalogEntries => self.entries_ui(ui),
-                View::Downloads => self.downloads_ui(ui),
                 View::Resources => self.resources_ui(ui),
                 View::Settings => self.settings_ui(ui),
                 View::CoverSetup => self.cover_setup_ui(ui),
                 View::Quick => self.quick_ui(ui),
                 View::Browser => self.explorer_ui(ui),
+                View::ImportReview => self.import_review_ui(ui),
             });
 
         self.toasts_ui(ctx);
@@ -117,7 +114,16 @@ impl App {
                 (NavAction::Context, "Anadir .exe"),
                 (NavAction::Favorite, "Favorito"),
                 (NavAction::TabPrev, "Orden"),
-                (NavAction::TabNext, "Catalogo"),
+                (NavAction::TabNext, "Favoritos"),
+                (NavAction::Search, "Buscar"),
+                (NavAction::Menu, "Menu"),
+            ],
+            View::Favorites => &[
+                (NavAction::Accept, "Ver"),
+                (NavAction::Back, "Limpiar busqueda"),
+                (NavAction::Favorite, "Quitar de favoritos"),
+                (NavAction::TabPrev, "Orden"),
+                (NavAction::TabNext, "Biblioteca"),
                 (NavAction::Search, "Buscar"),
                 (NavAction::Menu, "Menu"),
             ],
@@ -131,24 +137,6 @@ impl App {
                 (NavAction::Favorite, "Favorito"),
                 (NavAction::Search, "Buscar caratula"),
                 (NavAction::TabPrev, "Renombrar"),
-            ],
-            View::Catalog => &[
-                (NavAction::Accept, "Abrir"),
-                (NavAction::Back, "Volver"),
-                (NavAction::Context, "Carpeta del catalogo"),
-                (NavAction::TabNext, "Descargas"),
-            ],
-            View::CatalogEntries => &[
-                (NavAction::Accept, "Descargar"),
-                (NavAction::Back, "Volver"),
-                (NavAction::Context, "Anadir ROM local"),
-                (NavAction::Search, "Buscar"),
-                (NavAction::TabNext, "Descargas"),
-            ],
-            View::Downloads => &[
-                (NavAction::Back, "Volver"),
-                (NavAction::Context, "Cancelar"),
-                (NavAction::Favorite, "Limpiar terminadas"),
             ],
             View::Resources => &[
                 (NavAction::Accept, "Marcar/desmarcar servicio"),
@@ -174,6 +162,12 @@ impl App {
             View::Browser => {
                 &[(NavAction::Accept, "Abrir"), (NavAction::Back, "Subir"), (NavAction::Favorite, "Usar esta carpeta")]
             }
+            View::ImportReview => &[
+                (NavAction::Accept, "Marcar/desmarcar"),
+                (NavAction::Favorite, "Marcar/desmarcar todos"),
+                (NavAction::Context, "Anadir marcados"),
+                (NavAction::Back, "Cancelar"),
+            ],
         };
 
         let source = self.input_source;
@@ -221,17 +215,14 @@ impl App {
     fn view_title(&self) -> String {
         match self.view {
             View::Library => format!("Biblioteca ({})", self.library_view.len()),
+            View::Favorites => format!("Favoritos ({})", self.library_view.len()),
             View::GameDetail => self.focused_game().map(|g| g.title.clone()).unwrap_or_default(),
-            View::Catalog => format!("Catalogo ({} plataformas)", self.catalog.platforms().len()),
-            View::CatalogEntries => {
-                self.open_platform.as_deref().map(gm_catalog::display_name).unwrap_or_else(|| "Catalogo".to_string())
-            }
-            View::Downloads => "Descargas".to_string(),
             View::Resources => "Recursos del sistema".to_string(),
             View::Settings => "Ajustes".to_string(),
             View::CoverSetup => "Caratulas · SteamGridDB".to_string(),
             View::Quick => "Panel rapido".to_string(),
             View::Browser => "Explorador".to_string(),
+            View::ImportReview => format!("Importar ({} encontrados)", self.import_candidates.len()),
         }
     }
 }
