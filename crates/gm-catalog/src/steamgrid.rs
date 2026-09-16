@@ -12,10 +12,25 @@
 //! vez en `config.toml` y a partir de ahi es silencioso).
 
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::sync::Arc;
 
 use gm_core::error::{Error, Result};
 
 const API_BASE: &str = "https://www.steamgriddb.com/api/v2";
+
+/// Cliente HTTP compartido: la conexion TLS via schannel (la pila del propio
+/// Windows) es la unica que necesita el binario para hablar con SteamGridDB.
+#[cfg(windows)]
+fn build_agent() -> Result<ureq::Agent> {
+    let connector = native_tls::TlsConnector::new()
+        .map_err(|e| Error::Remote(format!("no se pudo inicializar TLS del sistema: {e}")))?;
+    Ok(ureq::AgentBuilder::new()
+        .tls_connector(Arc::new(connector))
+        .timeout_connect(std::time::Duration::from_secs(20))
+        .user_agent(concat!("GamingMode/", env!("CARGO_PKG_VERSION")))
+        .build())
+}
 
 /// Busca la caratula de un juego y la descarga a `dest_dir/{game_id}.{ext}`.
 /// Devuelve la ruta final si encuentra algo.
@@ -54,11 +69,6 @@ pub fn validate_key(api_key: &str) -> Result<()> {
 #[cfg(not(windows))]
 pub fn validate_key(_api_key: &str) -> Result<()> {
     Err(Error::Unsupported("la validacion de la clave solo funciona en Windows"))
-}
-
-#[cfg(windows)]
-fn build_agent() -> Result<ureq::Agent> {
-    crate::download::build_agent().ok_or_else(|| Error::Remote("no se pudo iniciar el transporte TLS".into()))
 }
 
 /// Primer resultado de autocompletado para el titulo dado.

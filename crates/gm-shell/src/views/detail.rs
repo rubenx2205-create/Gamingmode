@@ -51,9 +51,6 @@ impl App {
                 ui.add_space(6.0);
                 let kind = match &game.launch {
                     gm_core::Launch::Executable { .. } => "Ejecutable".to_string(),
-                    gm_core::Launch::Rom { platform, .. } => {
-                        format!("ROM · {}", gm_catalog::display_name(platform))
-                    }
                     gm_core::Launch::Shortcut { .. } => "Atajo del sistema".to_string(),
                 };
                 ui.label(RichText::new(kind).size(18.0).color(theme::pal().accent));

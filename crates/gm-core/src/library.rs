@@ -1,8 +1,8 @@
 //! Biblioteca de juegos del usuario.
 //!
 //! El modo juego es un frontend neutral: no habla con ninguna tienda ni sabe de
-//! cuentas. Solo conoce tres formas de arrancar algo: un ejecutable, una ROM
-//! con su emulador, o un atajo del sistema.
+//! cuentas. Solo conoce dos formas de arrancar algo: un ejecutable o un atajo
+//! del sistema.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -24,15 +24,6 @@ pub enum Launch {
         #[serde(default)]
         working_dir: Option<PathBuf>,
     },
-    /// Una ROM que se abre con un emulador configurado.
-    Rom {
-        path: PathBuf,
-        /// Id de plataforma del catalogo (`snes`, `psx`, ...).
-        platform: String,
-        /// Emulador concreto; si es None se resuelve por plataforma.
-        #[serde(default)]
-        emulator_id: Option<String>,
-    },
     /// Un atajo del sistema: un `.lnk` o un URI de protocolo, sea cual sea.
     /// Lo resuelve Windows, aqui no se conoce ni se privilegia ningun programa
     /// concreto.
@@ -43,7 +34,6 @@ impl Launch {
     pub fn target_display(&self) -> String {
         match self {
             Launch::Executable { path, .. } => path.display().to_string(),
-            Launch::Rom { path, .. } => path.display().to_string(),
             Launch::Shortcut { target } => target.clone(),
         }
     }
@@ -51,7 +41,7 @@ impl Launch {
     /// Una entrada apunta a algo que existe todavia?
     pub fn is_available(&self) -> bool {
         match self {
-            Launch::Executable { path, .. } | Launch::Rom { path, .. } => path.exists(),
+            Launch::Executable { path, .. } => path.exists(),
             // Lo resuelve el sistema al abrirlo; desde aqui no se puede saber.
             Launch::Shortcut { .. } => true,
         }

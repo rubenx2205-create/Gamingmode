@@ -17,9 +17,7 @@ impl App {
 
         let title = match purpose {
             BrowserPurpose::AddExecutable => "Elige un ejecutable",
-            BrowserPurpose::AddRom => "Elige una ROM",
-            BrowserPurpose::PickCatalogDir => "Elige la carpeta del catalogo (.jsonl)",
-            BrowserPurpose::PickDownloadDir => "Elige la carpeta de descargas",
+            BrowserPurpose::ImportFolder => "Elige la carpeta con tus juegos",
         };
         ui.label(RichText::new(title).size(22.0).strong());
         ui.add_space(4.0);

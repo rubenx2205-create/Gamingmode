@@ -11,18 +11,11 @@ use gm_input::NavAction;
 pub enum Filter {
     /// Programas lanzables.
     Executables,
-    /// Ficheros de ROM (cualquier extension conocida) y comprimidos.
-    Roms,
-    /// Solo carpetas (para elegir el directorio del catalogo o de descargas).
+    /// Solo carpetas (para elegir una carpeta a importar).
     Directories,
 }
 
 const EXECUTABLE_EXTS: &[&str] = &["exe", "lnk", "bat", "cmd", "url", "msi"];
-const ROM_EXTS: &[&str] = &[
-    "zip", "7z", "rar", "chd", "iso", "cue", "bin", "img", "nes", "sfc", "smc", "gb", "gbc", "gba", "nds", "n64",
-    "z64", "v64", "gcm", "rvz", "wbfs", "nsp", "xci", "pbp", "cso", "gdi", "md", "gen", "sms", "gg", "pce", "ws",
-    "wsc", "a26", "a78", "lnx", "int", "col", "d64", "t64", "tap", "dsk", "adf", "st", "rom",
-];
 
 #[derive(Debug, Clone)]
 pub struct Item {
@@ -91,7 +84,6 @@ impl Browser {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
         match self.filter {
             Filter::Executables => EXECUTABLE_EXTS.contains(&ext.as_str()),
-            Filter::Roms => ROM_EXTS.contains(&ext.as_str()),
             Filter::Directories => false,
         }
     }
@@ -171,10 +163,6 @@ mod tests {
         let browser = Browser::new(Filter::Executables, Some(dir.clone()));
         let names: Vec<&str> = browser.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["subcarpeta", "juego.exe"]);
-
-        let browser = Browser::new(Filter::Roms, Some(dir.clone()));
-        let names: Vec<&str> = browser.items.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(names, vec!["subcarpeta", "mario.sfc"]);
 
         let browser = Browser::new(Filter::Directories, Some(dir.clone()));
         assert_eq!(browser.items.len(), 1, "en modo carpeta solo se ven carpetas");

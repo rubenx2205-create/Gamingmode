@@ -880,9 +880,7 @@ name = "gm-catalog"
 version = "0.1.0"
 dependencies = [
  "gm-core",
- "log",
  "native-tls",
- "serde",
  "serde_json",
  "ureq",
 ]

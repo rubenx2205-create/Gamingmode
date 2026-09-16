@@ -26,10 +26,9 @@ const MAX_SIDE: u32 = 512;
 /// debe poder comerse VRAM sin limite.
 const MAX_CACHED: usize = 200;
 
-/// Cuantas decodificaciones corren a la vez. Acotado por la misma razon que
-/// las descargas (`gm_catalog::download::Downloader`): abrir un hilo por
-/// caratula de golpe al entrar en una biblioteca grande no decodifica nada
-/// mas rapido, solo satura el equipo un instante.
+/// Cuantas decodificaciones corren a la vez: abrir un hilo por caratula de
+/// golpe al entrar en una biblioteca grande no decodifica nada mas rapido,
+/// solo satura el equipo un instante.
 const MAX_CONCURRENT_DECODES: usize = 4;
 
 struct CachedEntry {

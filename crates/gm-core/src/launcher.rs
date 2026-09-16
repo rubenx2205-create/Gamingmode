@@ -58,28 +58,6 @@ pub fn launch(game: &Game, config: &Config) -> Result<Session> {
             cmd.current_dir(cwd);
             (cmd, true)
         }
-        Launch::Rom { path, platform, emulator_id } => {
-            if !path.exists() {
-                return Err(Error::NotFound(path.display().to_string()));
-            }
-            let emulator = emulator_id
-                .as_deref()
-                .and_then(|id| config.emulator_by_id(id))
-                .or_else(|| config.emulator_for(platform))
-                .ok_or_else(|| Error::Config(format!("no hay emulador configurado para la plataforma '{platform}'")))?;
-            if !emulator.exe.exists() {
-                return Err(Error::NotFound(emulator.exe.display().to_string()));
-            }
-            let rom = path.display().to_string();
-            let mut cmd = Command::new(&emulator.exe);
-            for arg in &emulator.args {
-                cmd.arg(arg.replace("{rom}", &rom));
-            }
-            if let Some(parent) = emulator.exe.parent() {
-                cmd.current_dir(parent);
-            }
-            (cmd, true)
-        }
         Launch::Shortcut { target } => (shortcut_command(target), false),
     };
 
@@ -161,13 +139,4 @@ mod tests {
         assert!(matches!(launch(&game, &Config::default()), Err(Error::NotFound(_))));
     }
 
-    #[test]
-    fn una_rom_sin_emulador_da_error_de_configuracion() {
-        let game = Game::new(
-            "Rom",
-            Launch::Rom { path: PathBuf::from("/no/existe/x.sfc"), platform: "snes".into(), emulator_id: None },
-        );
-        // Primero se valida la existencia de la ROM.
-        assert!(matches!(launch(&game, &Config::default()), Err(Error::NotFound(_))));
-    }
 }
